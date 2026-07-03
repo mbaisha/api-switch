@@ -640,13 +640,14 @@ async function submitWizard() {
     const apiKeys = keysTextarea.value.split('\n').map(k => k.trim()).filter(Boolean)
 
     if (editingChannelId.value) {
+      const existingChannel = channels.value.find(ch => ch.id === editingChannelId.value);
       await channelApi.update(editingChannelId.value, {
         id: editingChannelId.value,
         name: wizardForm.name, remark: wizardForm.remark,
         supplierType: wizardForm.supplierType, apiAddress: wizardForm.apiAddress,
         timeoutSeconds: wizardForm.timeoutSeconds, cooldownSeconds: wizardForm.cooldownSeconds,
         protocolType: wizardForm.protocolType, sseEnabled: wizardForm.sseEnabled,
-        supportedPaths, enabled: true
+        supportedPaths, enabled: existingChannel?.enabled ?? true
       })
       // 编辑时也保存密钥（如果有新输入的）
       if (apiKeys.length > 0) {

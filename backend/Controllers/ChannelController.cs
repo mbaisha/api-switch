@@ -127,7 +127,7 @@ public class ChannelController : ControllerBase
         await _channelRepo.UpdateAsync(existing);
 
         // 同步更新 API Key（先删后插，批量操作）
-        if (channel.ApiKeys != null)
+        if (channel.ApiKeys is { Count: > 0 })
         {
             await _db.Delete<ApiKey>().Where(k => k.ChannelId == id).ExecuteAffrowsAsync();
             var newKeys = channel.ApiKeys
@@ -145,7 +145,7 @@ public class ChannelController : ControllerBase
         }
 
         // 同步更新模型映射（先删后插，批量操作）
-        if (channel.Models != null)
+        if (channel.Models is { Count: > 0 })
         {
             await _db.Delete<ChannelModel>().Where(m => m.ChannelId == id).ExecuteAffrowsAsync();
             var newModels = channel.Models
