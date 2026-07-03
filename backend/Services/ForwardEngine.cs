@@ -124,8 +124,13 @@ public class ForwardEngine
                 // 协议协商：检查上游是否支持客户端请求的路径，不支持则降级到默认协议
                 var (upstreamPath, needsConversion) = DetermineUpstreamPath(requestPath, node);
                 var fullUrl = BuildDownstreamUrl(node.ApiAddress, node.SupplierType, upstreamPath, node.OriginalModelId);
-                // 协议降级时，先将请求体转为 Chat 格式（如 Responses input → messages）
-                var bodyForUpstream = needsConversion ? ConvertRequestToChat(requestBody, requestPath) : requestBody;
+                // 协议降级时，根据上游协议类型选择合适的请求体转换
+                var isMessagesUpstream = "Messages".Equals(node.ProtocolType, StringComparison.OrdinalIgnoreCase);
+                var bodyForUpstream = needsConversion
+                    ? (isMessagesUpstream
+                        ? ConvertRequestToMessages(requestBody, node)
+                        : ConvertRequestToChat(requestBody, requestPath))
+                    : requestBody;
                 var convertedBody = ConvertRequestBody(bodyForUpstream, upstreamPath, node);
 
                 _logger.LogInformation("发送到上游 {Url} 的请求体: {Body}", fullUrl, 
@@ -294,8 +299,13 @@ public class ForwardEngine
             {
                 var (upstreamPath, needsConversion) = DetermineUpstreamPath(requestPath, node);
                 var fullUrl = BuildDownstreamUrl(node.ApiAddress, node.SupplierType, upstreamPath, node.OriginalModelId);
-                // 协议降级时，先将请求体转为 Chat 格式（如 Responses input → messages）
-                var bodyForUpstream = needsConversion ? ConvertRequestToChat(requestBody, requestPath) : requestBody;
+                // 协议降级时，根据上游协议类型选择合适的请求体转换
+                var isMessagesUpstream = "Messages".Equals(node.ProtocolType, StringComparison.OrdinalIgnoreCase);
+                var bodyForUpstream = needsConversion
+                    ? (isMessagesUpstream
+                        ? ConvertRequestToMessages(requestBody, node)
+                        : ConvertRequestToChat(requestBody, requestPath))
+                    : requestBody;
                 var convertedBody = ConvertRequestBody(bodyForUpstream, upstreamPath, node);
 
                 _logger.LogInformation("发送到上游 {Url} 的请求体: {Body}", fullUrl,
@@ -1064,6 +1074,413 @@ public class ForwardEngine
         catch
         {
             return body;
+        }
+    }
+
+    /// <summary>
+    /// 将 OpenAI Responses API 请求体直接转换为 Anthropic Messages API 请求体。
+    /// 保留所有数据：input→messages、instructions→system、tools、tool_choice 等。
+    /// </summary>
+    private static string ConvertRequestToMessages(string responsesBody, LoadBalanceNode node)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(responsesBody);
+            var root = doc.RootElement;
+            var msgObj = new Dictionary<string, object?>();
+
+            // 1. model — 使用上游实际模型 ID
+            msgObj["model"] = node.OriginalModelId;
+
+            // 2. max_tokens — Anthropic 必填
+            var maxTokens = 1024;
+            if (root.TryGetProperty("max_output_tokens", out var maxOut))
+                maxTokens = maxOut.GetInt32();
+            else if (root.TryGetProperty("max_tokens", out var maxTok))
+                maxTokens = maxTok.GetInt32();
+            msgObj["max_tokens"] = maxTokens;
+
+            // 3. input → messages + 收集 system/developer 内容到 system 字段
+            var messages = new List<object>();
+            var systemParts = new List<string>();
+
+            // 收集 instructions 作为 system prompt
+            if (root.TryGetProperty("instructions", out var instructions))
+            {
+                var instrText = instructions.GetString();
+                if (!string.IsNullOrEmpty(instrText))
+                    systemParts.Add(instrText);
+            }
+
+            if (root.TryGetProperty("input", out var input))
+            {
+                if (input.ValueKind == JsonValueKind.String)
+                {
+                    // input: "string" → [{role:"user", content:"string"}]
+                    messages.Add(new Dictionary<string, object?>
+                    {
+                        ["role"] = "user",
+                        ["content"] = input.GetString() ?? ""
+                    });
+                }
+                else if (input.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in input.EnumerateArray())
+                    {
+                        var role = item.TryGetProperty("role", out var r) ? r.GetString() : "user";
+
+                        // system/developer → 收集到 system 字段
+                        if (role == "system" || role == "developer")
+                        {
+                            var sysContent = ExtractTextContent(item);
+                            if (!string.IsNullOrEmpty(sysContent))
+                                systemParts.Add(sysContent);
+                            continue;
+                        }
+
+                        // 处理 function_call / function_call_output 类型的输入项
+                        if (item.TryGetProperty("type", out var itemType))
+                        {
+                            var typeStr = itemType.GetString();
+                            if (typeStr == "function_call" || typeStr == "function_call_output")
+                            {
+                                var converted = ConvertFunctionCallItem(item, typeStr);
+                                if (converted != null)
+                                    messages.Add(converted);
+                                continue;
+                            }
+                        }
+
+                        // 普通消息：转换 content 为 Anthropic 格式
+                        var content = BuildAnthropicContent(item);
+                        messages.Add(new Dictionary<string, object?>
+                        {
+                            ["role"] = role,
+                            ["content"] = content
+                        });
+                    }
+                }
+            }
+
+            // 设置 system 字段（如果有）
+            if (systemParts.Count > 0)
+                msgObj["system"] = string.Join("\n\n", systemParts);
+
+            msgObj["messages"] = messages;
+
+            // 4. stream
+            if (root.TryGetProperty("stream", out var stream))
+                msgObj["stream"] = stream.GetBoolean();
+
+            // 5. temperature / top_p / top_k
+            if (root.TryGetProperty("temperature", out var temp))
+                msgObj["temperature"] = temp.GetDouble();
+            if (root.TryGetProperty("top_p", out var topP))
+                msgObj["top_p"] = topP.GetDouble();
+
+            // 6. stop → stop_sequences
+            if (root.TryGetProperty("stop", out var stop))
+            {
+                msgObj["stop_sequences"] = stop.ValueKind == JsonValueKind.String
+                    ? new[] { stop.GetString() }
+                    : JsonSerializer.Deserialize<object>(stop.GetRawText());
+            }
+
+            // 7. tools — OpenAI → Anthropic 格式转换
+            if (root.TryGetProperty("tools", out var tools) && tools.ValueKind == JsonValueKind.Array)
+            {
+                var anthropicTools = new List<object>();
+                foreach (var tool in tools.EnumerateArray())
+                {
+                    var convertedTool = ConvertOpenAIToolToAnthropic(tool);
+                    if (convertedTool != null)
+                        anthropicTools.Add(convertedTool);
+                }
+                if (anthropicTools.Count > 0)
+                    msgObj["tools"] = anthropicTools;
+            }
+
+            // 8. tool_choice — 格式转换
+            if (root.TryGetProperty("tool_choice", out var toolChoice))
+                msgObj["tool_choice"] = ConvertToolChoice(toolChoice);
+
+            // 9. metadata 透传
+            if (root.TryGetProperty("metadata", out var metadata))
+                msgObj["metadata"] = JsonSerializer.Deserialize<object>(metadata.GetRawText());
+
+            return JsonSerializer.Serialize(msgObj);
+        }
+        catch
+        {
+            return responsesBody;
+        }
+    }
+
+    /// <summary>
+    /// 从 input item 中提取 content 并转换为 Anthropic 格式（string 或 content block 数组）
+    /// </summary>
+    private static object BuildAnthropicContent(JsonElement item)
+    {
+        if (!item.TryGetProperty("content", out var content))
+            return "";
+
+        if (content.ValueKind == JsonValueKind.String)
+            return content.GetString() ?? "";
+
+        if (content.ValueKind == JsonValueKind.Array)
+        {
+            var blocks = new List<object>();
+            foreach (var block in content.EnumerateArray())
+            {
+                var converted = ConvertResponsesContentBlockToAnthropic(block);
+                if (converted != null)
+                    blocks.Add(converted);
+            }
+            if (blocks.Count == 0) return "";
+            // 单个文本块 → 简化为字符串
+            if (blocks.Count == 1 && blocks[0] is Dictionary<string, object?> single
+                && single.TryGetValue("type", out var typeObj) && typeObj is string typeStr && typeStr == "text"
+                && single.TryGetValue("text", out var textVal))
+            {
+                if (textVal is string ts) return ts;
+            }
+            return blocks;
+        }
+
+        return content.GetRawText();
+    }
+
+    /// <summary>
+    /// 从 input item 中提取纯文本内容（用于 system/developer 收集）
+    /// </summary>
+    private static string ExtractTextContent(JsonElement item)
+    {
+        if (!item.TryGetProperty("content", out var content))
+            return "";
+
+        if (content.ValueKind == JsonValueKind.String)
+            return content.GetString() ?? "";
+
+        if (content.ValueKind == JsonValueKind.Array)
+        {
+            var texts = new List<string>();
+            foreach (var block in content.EnumerateArray())
+            {
+                if (block.TryGetProperty("type", out var t))
+                {
+                    var type = t.GetString();
+                    if (type is "input_text" or "text" && block.TryGetProperty("text", out var text))
+                        texts.Add(text.GetString() ?? "");
+                }
+                else if (block.ValueKind == JsonValueKind.String)
+                {
+                    texts.Add(block.GetString() ?? "");
+                }
+            }
+            return string.Join("\n", texts);
+        }
+
+        return "";
+    }
+
+    /// <summary>
+    /// 将 Responses 的 content 块转为 Anthropic 格式
+    /// input_text → text，input_image → image，input_file → 丢弃
+    /// </summary>
+    private static object? ConvertResponsesContentBlockToAnthropic(JsonElement block)
+    {
+        if (!block.TryGetProperty("type", out var typeEl)) return block.GetRawText();
+        var type = typeEl.GetString();
+
+        switch (type)
+        {
+            case "input_text":
+            case "text":
+                if (block.TryGetProperty("text", out var text))
+                    return new Dictionary<string, object?> { ["type"] = "text", ["text"] = text.GetString() ?? "" };
+                return null;
+
+            case "input_image":
+                if (block.TryGetProperty("image_url", out var imgUrl))
+                {
+                    var url = imgUrl.GetString() ?? "";
+                    if (url.StartsWith("data:"))
+                    {
+                        var (mediaType, base64Data) = ParseDataUrl(url);
+                        return new Dictionary<string, object?>
+                        {
+                            ["type"] = "image",
+                            ["source"] = new Dictionary<string, object?>
+                            {
+                                ["type"] = "base64",
+                                ["media_type"] = mediaType,
+                                ["data"] = base64Data
+                            }
+                        };
+                    }
+                    else
+                    {
+                        return new Dictionary<string, object?>
+                        {
+                            ["type"] = "image",
+                            ["source"] = new Dictionary<string, object?>
+                            {
+                                ["type"] = "url",
+                                ["url"] = url
+                            }
+                        };
+                    }
+                }
+                return null;
+
+            case "input_file":
+                return null;
+
+            default:
+                return block.GetRawText();
+        }
+    }
+
+    /// <summary>
+    /// 将 OpenAI 格式的工具定义转为 Anthropic 格式
+    /// OpenAI: {type:"function", function:{name, description, parameters}}
+    /// Anthropic: {name, description, input_schema}
+    /// </summary>
+    private static object? ConvertOpenAIToolToAnthropic(JsonElement tool)
+    {
+        if (!tool.TryGetProperty("type", out var toolType) || toolType.GetString() != "function")
+            return null;
+        if (!tool.TryGetProperty("function", out var func))
+            return null;
+
+        var result = new Dictionary<string, object?>
+        {
+            ["name"] = func.TryGetProperty("name", out var name) ? name.GetString() : "unknown"
+        };
+
+        if (func.TryGetProperty("description", out var desc))
+            result["description"] = desc.GetString();
+
+        // parameters → input_schema
+        if (func.TryGetProperty("parameters", out var parameters))
+            result["input_schema"] = JsonSerializer.Deserialize<object>(parameters.GetRawText());
+        else
+            result["input_schema"] = new Dictionary<string, object> { ["type"] = "object", ["properties"] = new Dictionary<string, object>() };
+
+        return result;
+    }
+
+    /// <summary>
+    /// 将 OpenAI tool_choice 转为 Anthropic 格式
+    /// </summary>
+    private static object ConvertToolChoice(JsonElement choice)
+    {
+        if (choice.ValueKind == JsonValueKind.String)
+        {
+            var val = choice.GetString();
+            return val switch
+            {
+                "auto" => new Dictionary<string, object> { ["type"] = "auto" },
+                "required" => new Dictionary<string, object> { ["type"] = "any" },
+                "none" => new Dictionary<string, object> { ["type"] = "none" },
+                _ => new Dictionary<string, object> { ["type"] = "auto" }
+            };
+        }
+
+        if (choice.ValueKind == JsonValueKind.Object)
+        {
+            if (choice.TryGetProperty("type", out var ct))
+            {
+                var ctStr = ct.GetString();
+                if (ctStr == "function" && choice.TryGetProperty("name", out var cn))
+                {
+                    return new Dictionary<string, object>
+                    {
+                        ["type"] = "tool",
+                        ["name"] = cn.GetString() ?? ""
+                    };
+                }
+            }
+        }
+
+        return new Dictionary<string, object> { ["type"] = "auto" };
+    }
+
+    /// <summary>
+    /// 将 Responses 的 function_call / function_call_output 转为 Anthropic 的 tool_use / tool_result
+    /// </summary>
+    private static Dictionary<string, object?>? ConvertFunctionCallItem(JsonElement item, string type)
+    {
+        if (type == "function_call")
+        {
+            var args = item.TryGetProperty("arguments", out var arguments)
+                ? (JsonSerializer.Deserialize<object>(arguments.GetRawText())
+                   ?? new Dictionary<string, object?>())
+                : new Dictionary<string, object?>();
+            return new Dictionary<string, object?>
+            {
+                ["role"] = "assistant",
+                ["content"] = new[]
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "tool_use",
+                        ["id"] = item.TryGetProperty("id", out var id) ? id.GetString() : "call_" + Guid.NewGuid().ToString("N")[..8],
+                        ["name"] = item.TryGetProperty("name", out var name) ? name.GetString() : "",
+                        ["input"] = args
+                    }
+                }
+            };
+        }
+
+        if (type == "function_call_output")
+        {
+            var content = item.TryGetProperty("output", out var output) ? output.GetString() : "";
+            return new Dictionary<string, object?>
+            {
+                ["role"] = "user",
+                ["content"] = new[]
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "tool_result",
+                        ["tool_use_id"] = item.TryGetProperty("call_id", out var callId) ? callId.GetString() : "",
+                        ["content"] = content ?? ""
+                    }
+                }
+            };
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 解析 data: URL，提取 media_type 和 base64 data
+    /// </summary>
+    private static (string MediaType, string Data) ParseDataUrl(string url)
+    {
+        var defaultMediaType = "image/png";
+        if (!url.StartsWith("data:")) return (defaultMediaType, url);
+
+        try
+        {
+            var commaIdx = url.IndexOf(',');
+            if (commaIdx < 0) return (defaultMediaType, url);
+
+            var header = url[5..commaIdx];
+            var data = url[(commaIdx + 1)..];
+
+            if (header.Contains(";"))
+            {
+                var parts = header.Split(';');
+                return (parts[0] ?? defaultMediaType, data);
+            }
+
+            return (defaultMediaType, data);
+        }
+        catch
+        {
+            return (defaultMediaType, url);
         }
     }
 
