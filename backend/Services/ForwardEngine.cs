@@ -1097,7 +1097,8 @@ public class ForwardEngine
 
     /// <summary>
     /// 确定上游实际调用的路径，以及是否需要协议转换。
-    /// 如果上游不支持客户端请求的路径，降级到默认协议路径。
+    /// SupportedPaths 表示"下游可调用哪些路径"（入口路由），
+    /// ProtocolType 表示"上游实际使用什么协议"，上游路径完全由 ProtocolType 决定。
     /// </summary>
     /// <param name="clientPath">客户端请求路径，如 /v1/chat/completions 或 /v1/responses 或 /v1/messages</param>
     /// <param name="node">当前负载节点</param>
@@ -1106,28 +1107,25 @@ public class ForwardEngine
         string clientPath, LoadBalanceNode node)
     {
         var clientType = GetRequestType(clientPath);
-        var supportedSet = (node.SupportedPaths ?? "chat")
-            .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
 
-        // 上游支持该路径，直接透传
-        if (supportedSet.Contains(clientType))
-            return (clientPath, false);
-
-        // 上游不支持 → 降级到默认协议路径
-        var defaultType = (node.ProtocolType ?? "Chat").ToLowerInvariant() switch
+        // 上游实际支持的协议类型（由 ProtocolType 决定）
+        var upstreamType = (node.ProtocolType ?? "Chat").ToLowerInvariant() switch
         {
             "response" => "responses",
             "messages" => "messages",
             _ => "chat"
         };
-        var upstreamPath = GetTypePath(defaultType);
+        var upstreamPath = GetTypePath(upstreamType);
+        var needsConversion = !clientType.Equals(upstreamType, StringComparison.OrdinalIgnoreCase);
 
-        _logger.LogWarning(
-            "协议降级：客户端请求 {ClientPath}，但上游渠道 {Channel}({Model}) 仅支持 [{Supported}]，默认协议={Default}，降级到 {Upstream}",
-            clientPath, node.ChannelName, node.OriginalModelId,
-            node.SupportedPaths, node.ProtocolType, upstreamPath);
+        if (needsConversion)
+        {
+            _logger.LogWarning(
+                "协议转换：客户端请求 {ClientPath}（类型={ClientType}），上游协议={Protocol}，上游路径={Upstream}",
+                clientPath, clientType, node.ProtocolType, upstreamPath);
+        }
 
-        return (upstreamPath, true);
+        return (upstreamPath, needsConversion);
     }
 
     /// <summary>
