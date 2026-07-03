@@ -902,48 +902,39 @@ public class ForwardEngine
     }
 
     /// <summary>
-    /// 将 Responses API 的 content 块类型（input_text/input_image）转为 Chat API 类型（text/image_url）
+    /// 将 Responses API 的 content 块数组拍平为纯文本字符串。
+    /// 参考 Node.js 版 normalizeContent 实现：提取所有文本块并用换行符拼接。
     /// </summary>
-    private static object? ConvertResponsesContentBlock(JsonElement block)
+    private static string NormalizeContentForChat(JsonElement content)
     {
-        if (!block.TryGetProperty("type", out var typeEl)) return block.GetRawText();
-        var type = typeEl.GetString();
-        switch (type)
+        if (content.ValueKind == JsonValueKind.String)
+            return content.GetString() ?? "";
+
+        if (content.ValueKind == JsonValueKind.Array)
         {
-            case "input_text":
-                if (block.TryGetProperty("text", out var text))
+            var texts = new List<string>();
+            foreach (var block in content.EnumerateArray())
+            {
+                if (block.TryGetProperty("type", out var typeEl))
                 {
-                    return new Dictionary<string, object?>
-                    {
-                        ["type"] = "text",
-                        ["text"] = text.GetString()
-                    };
+                    var type = typeEl.GetString();
+                    if (type is "input_text" or "text" && block.TryGetProperty("text", out var text))
+                        texts.Add(text.GetString() ?? "");
+                    else if (type is "input_image" && block.TryGetProperty("image_url", out var imgUrl))
+                        texts.Add(imgUrl.GetString() ?? "");
                 }
-                return null;
-
-            case "input_image":
-                var imgObj = new Dictionary<string, object?> { ["type"] = "image_url" };
-                if (block.TryGetProperty("image_url", out var imgUrl))
+                else if (block.ValueKind == JsonValueKind.String)
                 {
-                    imgObj["image_url"] = new Dictionary<string, object?>
-                    {
-                        ["url"] = imgUrl.GetString()
-                    };
+                    texts.Add(block.GetString() ?? "");
                 }
-                else if (block.TryGetProperty("file_id", out var fid))
-                {
-                    // 有 file_id 但无 image_url 时跳过该块
-                    return null;
-                }
-                return imgObj;
-
-            case "input_file":
-                // Chat API 不支持 input_file，跳过
-                return null;
-
-            default:
-                return block.GetRawText();
+            }
+            return string.Join("\n", texts);
         }
+
+        if (content.ValueKind == JsonValueKind.Object && content.TryGetProperty("text", out var t))
+            return t.GetString() ?? "";
+
+        return content.GetRawText();
     }
 
     /// <summary>
@@ -980,35 +971,45 @@ public class ForwardEngine
                     }
                     else if (input.ValueKind == JsonValueKind.Array)
                     {
-                        // input: 数组格式，处理每个 item 中的 content 字段
+                        // input: 数组格式，处理每个 item
                         foreach (var item in input.EnumerateArray())
                         {
                             var msg = new Dictionary<string, object?>();
-                            msg["role"] = item.TryGetProperty("role", out var r) ? r.GetString() : "user";
+
+                            // 角色映射：Responses 的 developer → Chat 的 system
+                            var role = item.TryGetProperty("role", out var r) ? r.GetString() : "user";
+                            msg["role"] = role switch
+                            {
+                                "developer" => "system",
+                                _ => role
+                            };
+
+                            // content 处理：数组拍平为纯文本字符串（参考 px.js normalizeContent）
                             if (item.TryGetProperty("content", out var c))
                             {
-                                if (c.ValueKind == JsonValueKind.String)
-                                {
-                                    msg["content"] = c.GetString();
-                                }
-                                else if (c.ValueKind == JsonValueKind.Array)
-                                {
-                                    // 处理 content 块数组，转换 input_text→text, input_image→image_url
-                                    var convertedBlocks = new List<object>();
-                                    foreach (var block in c.EnumerateArray())
-                                    {
-                                        var converted = ConvertResponsesContentBlock(block);
-                                        if (converted != null)
-                                            convertedBlocks.Add(converted);
-                                    }
-                                    if (convertedBlocks.Count > 0)
-                                        msg["content"] = convertedBlocks;
-                                }
+                                msg["content"] = NormalizeContentForChat(c);
                             }
+
                             messages.Add(msg);
                         }
                     }
                     chatObj["messages"] = messages;
+                }
+
+                // instructions → 作为 system 消息插入到消息列表开头（参考 px.js）
+                if (root.TryGetProperty("instructions", out var instructions))
+                {
+                    var instrText = instructions.GetString();
+                    if (!string.IsNullOrEmpty(instrText))
+                    {
+                        var sysMsg = new Dictionary<string, object?>
+                        {
+                            ["role"] = "system",
+                            ["content"] = instrText
+                        };
+                        if (chatObj.TryGetValue("messages", out var existing) && existing is List<object> msgList)
+                            msgList.Insert(0, sysMsg);
+                    }
                 }
 
                 // 保留 stream
@@ -1036,6 +1037,12 @@ public class ForwardEngine
                         ? stop.GetString()
                         : JsonSerializer.Deserialize<object>(stop.GetRawText());
                 }
+
+                // tools / tool_choice（参考 px.js 透传）
+                if (root.TryGetProperty("tools", out var tools))
+                    chatObj["tools"] = JsonSerializer.Deserialize<object>(tools.GetRawText());
+                if (root.TryGetProperty("tool_choice", out var toolChoice))
+                    chatObj["tool_choice"] = JsonSerializer.Deserialize<object>(toolChoice.GetRawText());
 
                 return JsonSerializer.Serialize(chatObj);
             }
