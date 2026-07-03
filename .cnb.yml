@@ -1,0 +1,12 @@
+$:
+  # vscode 事件：专供页面中启动云原生开发用
+  vscode:
+    - runner:
+        cpus: 4
+
+      services:
+        - vscode
+        - docker
+      stages:
+        - name: ls
+          script: ls -al

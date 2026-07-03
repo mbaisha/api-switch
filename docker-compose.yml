@@ -1,0 +1,55 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ai-forward-pg
+    environment:
+      POSTGRES_DB: ai_forward
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: ai-forward-redis
+    command: redis-server --requirepass 123456
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ai-forward-backend
+    image: docker.cnb.cool/vxlife/apiswitch/apiswitch-api:latest
+    ports:
+      - "5000:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
+      - ConnectionStrings__Default=Host=postgres;Port=5432;Database=ai_forward;Username=postgres;Password=postgres;Timezone=UTC
+      - Redis__Configuration=redis:6379,password=123456
+      - Redis__InstanceName=ai-forward
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ai-forward-frontend
+    image: docker.cnb.cool/vxlife/apiswitch/apiswitch-ui:latest
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  pg_data:
