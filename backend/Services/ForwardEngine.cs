@@ -124,7 +124,9 @@ public class ForwardEngine
                 // 协议协商：检查上游是否支持客户端请求的路径，不支持则降级到默认协议
                 var (upstreamPath, needsConversion) = DetermineUpstreamPath(requestPath, node);
                 var fullUrl = BuildDownstreamUrl(node.ApiAddress, node.SupplierType, upstreamPath, node.OriginalModelId);
-                var convertedBody = ConvertRequestBody(requestBody, upstreamPath, node);
+                // 协议降级时，先将请求体转为 Chat 格式（如 Responses input → messages）
+                var bodyForUpstream = needsConversion ? ConvertRequestToChat(requestBody, requestPath) : requestBody;
+                var convertedBody = ConvertRequestBody(bodyForUpstream, upstreamPath, node);
 
                 try
                 {
@@ -289,7 +291,9 @@ public class ForwardEngine
             {
                 var (upstreamPath, needsConversion) = DetermineUpstreamPath(requestPath, node);
                 var fullUrl = BuildDownstreamUrl(node.ApiAddress, node.SupplierType, upstreamPath, node.OriginalModelId);
-                var convertedBody = ConvertRequestBody(requestBody, upstreamPath, node);
+                // 协议降级时，先将请求体转为 Chat 格式（如 Responses input → messages）
+                var bodyForUpstream = needsConversion ? ConvertRequestToChat(requestBody, requestPath) : requestBody;
+                var convertedBody = ConvertRequestBody(bodyForUpstream, upstreamPath, node);
 
                 if (needsConversion)
                 {
@@ -889,6 +893,153 @@ public class ForwardEngine
             return string.Join("\n", texts);
         }
         return content.ToString();
+    }
+
+    /// <summary>
+    /// 将 Responses API 的 content 块类型（input_text/input_image）转为 Chat API 类型（text/image_url）
+    /// </summary>
+    private static object? ConvertResponsesContentBlock(JsonElement block)
+    {
+        if (!block.TryGetProperty("type", out var typeEl)) return block.GetRawText();
+        var type = typeEl.GetString();
+        switch (type)
+        {
+            case "input_text":
+                if (block.TryGetProperty("text", out var text))
+                {
+                    return new Dictionary<string, object?>
+                    {
+                        ["type"] = "text",
+                        ["text"] = text.GetString()
+                    };
+                }
+                return null;
+
+            case "input_image":
+                var imgObj = new Dictionary<string, object?> { ["type"] = "image_url" };
+                if (block.TryGetProperty("image_url", out var imgUrl))
+                {
+                    imgObj["image_url"] = new Dictionary<string, object?>
+                    {
+                        ["url"] = imgUrl.GetString()
+                    };
+                }
+                else if (block.TryGetProperty("file_id", out var fid))
+                {
+                    // 有 file_id 但无 image_url 时跳过该块
+                    return null;
+                }
+                return imgObj;
+
+            case "input_file":
+                // Chat API 不支持 input_file，跳过
+                return null;
+
+            default:
+                return block.GetRawText();
+        }
+    }
+
+    /// <summary>
+    /// 当协议降级时，将客户端请求体从源格式转换为 Chat 格式。
+    /// 例如：Responses 格式（input 字段）→ Chat 格式（messages 字段）
+    /// </summary>
+    private static string ConvertRequestToChat(string body, string clientRequestPath)
+    {
+        var clientType = GetRequestType(clientRequestPath);
+        if (clientType == "chat") return body;
+
+        try
+        {
+            // 目前只处理 Responses 格式 → Chat 格式
+            // Messages(Anthropic)格式与 Chat 格式结构相似（都有 messages 数组），可直接透传
+            if (clientType == "responses")
+            {
+                using var doc = JsonDocument.Parse(body);
+                var root = doc.RootElement;
+                var chatObj = new Dictionary<string, object?>();
+
+                // 保留 model
+                if (root.TryGetProperty("model", out var model))
+                    chatObj["model"] = model.GetString();
+
+                // 转换 input → messages
+                if (root.TryGetProperty("input", out var input))
+                {
+                    var messages = new List<object>();
+                    if (input.ValueKind == JsonValueKind.String)
+                    {
+                        // input: "string" → messages: [{role:"user", content:"string"}]
+                        messages.Add(new { role = "user", content = input.GetString() });
+                    }
+                    else if (input.ValueKind == JsonValueKind.Array)
+                    {
+                        // input: 数组格式，处理每个 item 中的 content 字段
+                        foreach (var item in input.EnumerateArray())
+                        {
+                            var msg = new Dictionary<string, object?>();
+                            msg["role"] = item.TryGetProperty("role", out var r) ? r.GetString() : "user";
+                            if (item.TryGetProperty("content", out var c))
+                            {
+                                if (c.ValueKind == JsonValueKind.String)
+                                {
+                                    msg["content"] = c.GetString();
+                                }
+                                else if (c.ValueKind == JsonValueKind.Array)
+                                {
+                                    // 处理 content 块数组，转换 input_text→text, input_image→image_url
+                                    var convertedBlocks = new List<object>();
+                                    foreach (var block in c.EnumerateArray())
+                                    {
+                                        var converted = ConvertResponsesContentBlock(block);
+                                        if (converted != null)
+                                            convertedBlocks.Add(converted);
+                                    }
+                                    if (convertedBlocks.Count > 0)
+                                        msg["content"] = convertedBlocks;
+                                }
+                            }
+                            messages.Add(msg);
+                        }
+                    }
+                    chatObj["messages"] = messages;
+                }
+
+                // 保留 stream
+                if (root.TryGetProperty("stream", out var stream))
+                    chatObj["stream"] = stream.GetBoolean();
+
+                // 映射 max_output_tokens → max_tokens
+                if (root.TryGetProperty("max_output_tokens", out var maxOut))
+                    chatObj["max_tokens"] = maxOut.GetInt32();
+                else if (root.TryGetProperty("max_tokens", out var maxTok))
+                    chatObj["max_tokens"] = maxTok.GetInt32();
+                // 透传 max_completion_tokens（Chat API 也支持）
+                if (root.TryGetProperty("max_completion_tokens", out var maxComp))
+                    chatObj["max_completion_tokens"] = maxComp.GetInt32();
+
+                // 保留通用参数
+                if (root.TryGetProperty("temperature", out var temp))
+                    chatObj["temperature"] = temp.GetDouble();
+                if (root.TryGetProperty("top_p", out var topP))
+                    chatObj["top_p"] = topP.GetDouble();
+                // stop 在 Responses 中是 array，Chat 接受 string|array
+                if (root.TryGetProperty("stop", out var stop))
+                {
+                    chatObj["stop"] = stop.ValueKind == JsonValueKind.String
+                        ? stop.GetString()
+                        : stop.GetRawText();
+                }
+
+                return JsonSerializer.Serialize(chatObj);
+            }
+
+            return body;
+        }
+        catch
+        {
+            return body;
+        }
     }
 
     /// <summary>
