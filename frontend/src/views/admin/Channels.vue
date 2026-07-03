@@ -31,8 +31,8 @@
           </a-tag>
         </template>
         <template #protocolType="{ record }">
-          <a-tag v-if="getPreset(record.supplierType)?.isOpenAIProtocol" :color="record.protocolType === 'Chat' ? 'green' : 'purple'" size="small">
-            {{ record.protocolType === 'Chat' ? 'Chat' : 'Response' }}
+          <a-tag v-if="getPreset(record.supplierType)?.isOpenAIProtocol" :color="record.protocolType === 'Chat' ? 'green' : record.protocolType === 'Messages' ? 'orange' : 'purple'" size="small">
+            {{ record.protocolType === 'Chat' ? 'Chat' : record.protocolType === 'Messages' ? 'Messages' : 'Response' }}
           </a-tag>
           <span v-else style="color: var(--color-text-3); font-size: 12px">-</span>
         </template>
@@ -98,6 +98,7 @@
                 <a-checkbox-group v-model="wizardForm._supportedPathList">
                   <a-checkbox value="chat">/v1/chat/completions</a-checkbox>
                   <a-checkbox value="responses">/v1/responses</a-checkbox>
+                  <a-checkbox value="messages">/v1/messages</a-checkbox>
                 </a-checkbox-group>
               </a-form-item>
             </a-col>
@@ -106,6 +107,7 @@
                 <a-radio-group v-model="wizardForm.protocolType">
                   <a-radio value="Chat">Chat</a-radio>
                   <a-radio value="Response">Response</a-radio>
+                  <a-radio value="Messages">Messages</a-radio>
                 </a-radio-group>
               </a-form-item>
             </a-col>
@@ -501,7 +503,7 @@ function getApiHint() {
     case 'DeepSeek': return `如填写 https://api.deepseek.com/v1，系统自动追加 /chat/completions`
     case 'Groq': return `如填写 https://api.groq.com/openai/v1，系统自动追加 /chat/completions`
     case 'Together': return `如填写 https://api.together.xyz/v1，系统自动追加 /chat/completions`
-    case 'Custom': return 'OpenAI 兼容接口，系统自动追加 /chat/completions 或 /responses'
+    case 'Custom': return 'OpenAI 兼容接口，系统自动追加 /chat/completions、/responses 或 /messages'
     default: return '系统将自动拼接正确的接口路径'
   }
 }
@@ -583,6 +585,7 @@ function selectSupplier(preset) {
   wizardForm._availableModels = preset.defaultModels || []
   wizardForm._supportedPathList = preset.supportedPaths || ['chat']
   wizardForm._supportsResponses = (preset.supportedPaths || []).includes('responses')
+  wizardForm._supportsMessages = (preset.supportedPaths || []).includes('messages')
   if (!preset.isOpenAIProtocol) {
     wizardForm.protocolType = 'Chat'
     wizardForm._supportedPathList = preset.supportedPaths || []
@@ -685,6 +688,7 @@ async function editChannel(record) {
     sseEnabled: record.sseEnabled, _availableModels: preset?.defaultModels || [],
     _supportedPathList: (record.supportedPaths || 'chat').split(',').filter(Boolean),
     _supportsResponses: (record.supportedPaths || '').includes('responses'),
+    _supportsMessages: (record.supportedPaths || '').includes('messages'),
     apiKeys: []
   })
   keysTextarea.value = ''

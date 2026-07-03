@@ -782,11 +782,9 @@ public class ForwardEngine
     private string ConvertRequestBody(string body, string requestPath, LoadBalanceNode node)
     {
         var supplierType = node.SupplierType ?? "OpenAI";
-        var isChatPath = requestPath.Contains("/chat/completions");
 
         // 同协议：替换模型ID后透传（将用户的 customModelId 替换为上游实际模型ID）
-        if ((isChatPath && supplierType is "OpenAI" or "Azure" or "DeepSeek" or "Groq" or "Together" or "Custom") ||
-            (!isChatPath && supplierType == "OpenAI"))
+        if (supplierType is "OpenAI" or "Azure" or "DeepSeek" or "Groq" or "Together" or "Custom")
         {
             return ReplaceModelId(body, node.OriginalModelId);
         }
