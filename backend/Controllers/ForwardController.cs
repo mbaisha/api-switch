@@ -33,6 +33,13 @@ public class ForwardController : ControllerBase
         HandleForwardAsync("/v1/responses");
 
     /// <summary>
+    /// Messages 接口 (兼容 Anthropic 格式)
+    /// </summary>
+    [HttpPost("/v1/messages")]
+    public Task<IActionResult> Messages() =>
+        HandleForwardAsync("/v1/messages");
+
+    /// <summary>
     /// 统一转发处理（提取公共逻辑，避免重复代码）
     /// </summary>
     private async Task<IActionResult> HandleForwardAsync(string requestPath)

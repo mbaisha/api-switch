@@ -120,8 +120,11 @@ public class ForwardEngine
                 _logger.LogInformation("尝试转发 → 渠道 {Channel}/{Model} API Key={Key} (第 {Attempt} 轮)",
                     node.ChannelName, node.OriginalModelId,
                     node.ApiKey[..Math.Min(node.ApiKey.Length, 8)], attempt + 1);
-                var fullUrl = BuildDownstreamUrl(node.ApiAddress, node.SupplierType, requestPath, node.OriginalModelId);
-                var convertedBody = ConvertRequestBody(requestBody, requestPath, node);
+
+                // 协议协商：检查上游是否支持客户端请求的路径，不支持则降级到默认协议
+                var (upstreamPath, needsConversion) = DetermineUpstreamPath(requestPath, node);
+                var fullUrl = BuildDownstreamUrl(node.ApiAddress, node.SupplierType, upstreamPath, node.OriginalModelId);
+                var convertedBody = ConvertRequestBody(requestBody, upstreamPath, node);
 
                 try
                 {
@@ -168,7 +171,10 @@ public class ForwardEngine
                     }
 
                     // 成功！
-                    var convertedResponse = ConvertResponseBody(responseBody, node.ProtocolType, requestPath, node);
+                    var baseResponse = ConvertResponseBody(responseBody, node.ProtocolType, requestPath, node);
+                    var convertedResponse = needsConversion
+                        ? ConvertResponseFormat(baseResponse, upstreamPath, requestPath, node)
+                        : baseResponse;
                     var (inputTokens, outputTokens) = ExtractTokenUsage(convertedResponse);
 
                     await _tokenService.RecordUsage(token.Id, inputTokens, outputTokens);
@@ -281,9 +287,93 @@ public class ForwardEngine
 
             foreach (var node in candidates)
             {
-                var fullUrl = BuildDownstreamUrl(node.ApiAddress, node.SupplierType, requestPath, node.OriginalModelId);
-                var convertedBody = ConvertRequestBody(requestBody, requestPath, node);
+                var (upstreamPath, needsConversion) = DetermineUpstreamPath(requestPath, node);
+                var fullUrl = BuildDownstreamUrl(node.ApiAddress, node.SupplierType, upstreamPath, node.OriginalModelId);
+                var convertedBody = ConvertRequestBody(requestBody, upstreamPath, node);
 
+                if (needsConversion)
+                {
+                    // ======== 非流式降级路径 ========
+                    _logger.LogInformation("协议降级非流式：客户端 {Path} → 上游 {Url}，非流式调用后模拟 SSE",
+                        requestPath, fullUrl);
+                    var fallbackBody = RemoveStreamFlag(convertedBody);
+
+                    try
+                    {
+                        var client = _httpClientFactory.CreateClient("AIClient");
+                        client.Timeout = TimeSpan.FromSeconds(node.TimeoutSeconds);
+
+                        var httpRequest = new HttpRequestMessage(HttpMethod.Post, fullUrl)
+                        {
+                            Content = new StringContent(fallbackBody, Encoding.UTF8, "application/json")
+                        };
+                        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", node.ApiKey);
+
+                        var response = await client.SendAsync(httpRequest);
+                        var responseBody = await response.Content.ReadAsStringAsync();
+
+                        if (!response.IsSuccessStatusCode)
+                        {
+                            var sc = (int)response.StatusCode;
+                            await HandleError(response, node);
+                            var errBody = responseBody;
+                            var downstreamErr = ExtractDownstreamError(errBody);
+                            lastError = downstreamErr.Length > 0
+                                ? $"上游[{sc}]: {downstreamErr}"
+                                : $"上游返回 {sc}";
+                            await LogCall(tokenValue, customModelId, node.ChannelName, node.OriginalModelId, "Failed",
+                                true, 0, 0, (long)(DateTime.UtcNow - startTime).TotalMilliseconds,
+                                requestBody, errBody, lastError + " (SSE降级等待5秒后重试)", clientIp);
+
+                            if (ShouldRetry(sc))
+                            {
+                                _logger.LogWarning("SSE降级 第 {Attempt} 次尝试：节点 {Channel}/{Model} 返回 {StatusCode}，等待 {Delay}ms",
+                                    attempt + 1, node.ChannelName, node.OriginalModelId, sc, retryDelayMs);
+                                await Task.Delay(retryDelayMs);
+                                continue;
+                            }
+
+                            context.Response.StatusCode = sc;
+                            await context.Response.WriteAsync(JsonSerializer.Serialize(
+                                new { error = new { message = $"请求失败: {lastError}" } }));
+                            return;
+                        }
+
+                        // 成功！转换响应 → 模拟 SSE
+                        var baseResponse = ConvertResponseBody(responseBody, node.ProtocolType, requestPath, node);
+                        var finalResponse = ConvertResponseFormat(baseResponse, upstreamPath, requestPath, node);
+
+                        await FakeSseStreamAsync(context.Response, finalResponse, requestPath);
+
+                        // Token 统计与日志
+                        var (inputTokens, outputTokens) = ExtractTokenUsage(finalResponse);
+                        var logId = await LogCall(tokenValue, customModelId, node.ChannelName, node.OriginalModelId, "Success",
+                            true, inputTokens, outputTokens, (long)(DateTime.UtcNow - startTime).TotalMilliseconds,
+                            requestBody, responseBody, null, clientIp);
+                        if (token != null)
+                            await _tokenService.RecordUsage(token.Id, inputTokens, outputTokens);
+                        await RecordUpstreamUsage(node.ApiKeyId, inputTokens, outputTokens);
+                        if (logId > 0)
+                            await SaveCallImagesAsync(logId, requestBody, null);
+
+                        usedNode = node;
+                        return; // 成功，直接返回
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "SSE降级连接异常，节点: {Channel}/{Model}，第 {Attempt} 次尝试",
+                            node.ChannelName, node.OriginalModelId, attempt + 1);
+                        await SetCooldownAsync(node, node.CooldownSeconds);
+                        lastError = ex.Message;
+                        await LogCall(tokenValue, customModelId, node.ChannelName, node.OriginalModelId, "Failed",
+                            true, 0, 0, (long)(DateTime.UtcNow - startTime).TotalMilliseconds,
+                            requestBody, null, ex.Message + " (SSE降级等待5秒后重试)", clientIp);
+                        await Task.Delay(retryDelayMs);
+                        continue;
+                    }
+                }
+
+                // ======== 正常 SSE 流式路径 ========
                 try
                 {
                     var client = _httpClientFactory.CreateClient("AIClient");
@@ -852,7 +942,9 @@ public class ForwardEngine
         return type switch
         {
             "OpenAI" or "DeepSeek" or "Groq" or "Together" or "Custom" =>
-                isChat ? $"{baseUri}/chat/completions" : $"{baseUri}/responses",
+                requestPath.Contains("/chat/completions") ? $"{baseUri}/chat/completions" :
+                requestPath.Contains("/messages") ? $"{baseUri}/messages" :
+                $"{baseUri}/responses",
 
             "Azure" =>
                 // Azure 格式：{base}/openai/deployments/{model}/chat/completions?api-version=2024-10-21
@@ -979,6 +1071,637 @@ public class ForwardEngine
             }
         });
     }
+
+    #region 协议协商
+
+    /// <summary>
+    /// 从客户端请求路径中提取协议类型标识
+    /// </summary>
+    private static string GetRequestType(string clientPath)
+    {
+        if (clientPath.Contains("/messages")) return "messages";
+        if (clientPath.Contains("/responses")) return "responses";
+        return "chat";
+    }
+
+    /// <summary>
+    /// 将协议类型标识转换为具体的 API 路径
+    /// </summary>
+    private static string GetTypePath(string type)
+    {
+        return type switch
+        {
+            "messages" => "/v1/messages",
+            "responses" => "/v1/responses",
+            _ => "/v1/chat/completions"
+        };
+    }
+
+    /// <summary>
+    /// 确定上游实际调用的路径，以及是否需要协议转换。
+    /// 如果上游不支持客户端请求的路径，降级到默认协议路径。
+    /// </summary>
+    /// <param name="clientPath">客户端请求路径，如 /v1/chat/completions 或 /v1/responses 或 /v1/messages</param>
+    /// <param name="node">当前负载节点</param>
+    /// <returns>(上游实际路径, 是否需要协议转换)</returns>
+    private (string UpstreamPath, bool NeedsConversion) DetermineUpstreamPath(
+        string clientPath, LoadBalanceNode node)
+    {
+        var clientType = GetRequestType(clientPath);
+        var supportedSet = (node.SupportedPaths ?? "chat")
+            .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+
+        // 上游支持该路径，直接透传
+        if (supportedSet.Contains(clientType))
+            return (clientPath, false);
+
+        // 上游不支持 → 降级到默认协议路径
+        var defaultType = (node.ProtocolType ?? "Chat").ToLowerInvariant() switch
+        {
+            "response" => "responses",
+            "messages" => "messages",
+            _ => "chat"
+        };
+        var upstreamPath = GetTypePath(defaultType);
+
+        _logger.LogWarning(
+            "协议降级：客户端请求 {ClientPath}，但上游渠道 {Channel}({Model}) 仅支持 [{Supported}]，默认协议={Default}，降级到 {Upstream}",
+            clientPath, node.ChannelName, node.OriginalModelId,
+            node.SupportedPaths, node.ProtocolType, upstreamPath);
+
+        return (upstreamPath, true);
+    }
+
+    /// <summary>
+    /// 将 OpenAI Chat Completions 响应转换为 Responses 格式
+    /// </summary>
+    private static string ConvertChatToResponse(string chatBody)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(chatBody);
+            var root = doc.RootElement;
+
+            var responseId = root.TryGetProperty("id", out var id) ? id.GetString() : "resp_" + Guid.NewGuid().ToString("N")[..8];
+            var createdUnix = root.TryGetProperty("created", out var created) ? created.GetDouble() : DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var model = root.TryGetProperty("model", out var m) ? m.GetString() : "unknown";
+
+            // 提取 choices[0].message.content
+            var text = "";
+            if (root.TryGetProperty("choices", out var choices) && choices.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var choice in choices.EnumerateArray())
+                {
+                    if (choice.TryGetProperty("message", out var msg) &&
+                        msg.TryGetProperty("content", out var content) &&
+                        content.ValueKind == JsonValueKind.String)
+                    {
+                        text = content.GetString() ?? "";
+                    }
+                }
+            }
+
+            // 提取 usage
+            var inputTokens = 0; var outputTokens = 0;
+            if (root.TryGetProperty("usage", out var usage))
+            {
+                inputTokens = usage.TryGetProperty("prompt_tokens", out var pt) ? pt.GetInt32() : 0;
+                outputTokens = usage.TryGetProperty("completion_tokens", out var ct) ? ct.GetInt32() : 0;
+            }
+
+            return JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["id"] = responseId,
+                ["object"] = "response",
+                ["created_at"] = createdUnix,
+                ["model"] = model,
+                ["output"] = new[]
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["id"] = "msg_" + Guid.NewGuid().ToString("N")[..8],
+                        ["type"] = "message",
+                        ["role"] = "assistant",
+                        ["content"] = new[]
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "output_text",
+                                ["text"] = text,
+                                ["annotations"] = Array.Empty<string>()
+                            }
+                        }
+                    }
+                },
+                ["usage"] = new Dictionary<string, int>
+                {
+                    ["input_tokens"] = inputTokens,
+                    ["output_tokens"] = outputTokens,
+                    ["total_tokens"] = inputTokens + outputTokens
+                }
+            });
+        }
+        catch { return chatBody; }
+    }
+
+    /// <summary>
+    /// 将 OpenAI Responses 响应转换为 Chat Completions 格式
+    /// </summary>
+    private static string ConvertResponseToChat(string responseBody)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(responseBody);
+            var root = doc.RootElement;
+
+            var chatId = "chatcmpl-" + Guid.NewGuid().ToString("N")[..8];
+            var createdUnix = root.TryGetProperty("created_at", out var created)
+                ? (long)created.GetDouble() : DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var model = root.TryGetProperty("model", out var m) ? m.GetString() : "unknown";
+
+            // 从 output[0].content[0].text 提取文本
+            var text = "";
+            if (root.TryGetProperty("output", out var output) && output.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in output.EnumerateArray())
+                {
+                    if (item.TryGetProperty("type", out var type) && type.GetString() == "message" &&
+                        item.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var part in content.EnumerateArray())
+                        {
+                            if (part.TryGetProperty("type", out var pt) && pt.GetString() == "output_text" &&
+                                part.TryGetProperty("text", out var t))
+                            {
+                                text = t.GetString() ?? "";
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 提取 usage
+            var inputTokens = 0; var outputTokens = 0;
+            if (root.TryGetProperty("usage", out var usage))
+            {
+                inputTokens = usage.TryGetProperty("input_tokens", out var it) ? it.GetInt32() : 0;
+                outputTokens = usage.TryGetProperty("output_tokens", out var ot) ? ot.GetInt32() : 0;
+            }
+
+            return JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["id"] = chatId,
+                ["object"] = "chat.completion",
+                ["created"] = createdUnix,
+                ["model"] = model,
+                ["choices"] = new[]
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["index"] = 0,
+                        ["message"] = new Dictionary<string, object?>
+                        {
+                            ["role"] = "assistant",
+                            ["content"] = text
+                        },
+                        ["finish_reason"] = "stop"
+                    }
+                },
+                ["usage"] = new Dictionary<string, int>
+                {
+                    ["prompt_tokens"] = inputTokens,
+                    ["completion_tokens"] = outputTokens,
+                    ["total_tokens"] = inputTokens + outputTokens
+                }
+            });
+        }
+        catch { return responseBody; }
+    }
+
+    /// <summary>
+    /// 将 OpenAI Chat Completions 格式转换为 Anthropic Messages 格式
+    /// </summary>
+    private static string ConvertChatToMessages(string chatBody)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(chatBody);
+            var root = doc.RootElement;
+
+            var msgId = "msg_" + Guid.NewGuid().ToString("N")[..12];
+            var model = root.TryGetProperty("model", out var m) ? m.GetString() : "unknown";
+
+            // 提取 choices[0].message.content
+            var text = "";
+            if (root.TryGetProperty("choices", out var choices) && choices.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var choice in choices.EnumerateArray())
+                {
+                    if (choice.TryGetProperty("message", out var msg) &&
+                        msg.TryGetProperty("content", out var content) &&
+                        content.ValueKind == JsonValueKind.String)
+                    {
+                        text = content.GetString() ?? "";
+                    }
+                }
+            }
+
+            // 提取 usage
+            var inputTokens = 0; var outputTokens = 0;
+            if (root.TryGetProperty("usage", out var usage))
+            {
+                inputTokens = usage.TryGetProperty("prompt_tokens", out var pt) ? pt.GetInt32() : 0;
+                outputTokens = usage.TryGetProperty("completion_tokens", out var ct) ? ct.GetInt32() : 0;
+            }
+
+            var stopReason = "end_turn";
+            if (root.TryGetProperty("choices", out var ch2) && ch2.ValueKind == JsonValueKind.Array &&
+                ch2.GetArrayLength() > 0)
+            {
+                var first = ch2[0];
+                if (first.TryGetProperty("finish_reason", out var fr))
+                {
+                    var frStr = fr.GetString();
+                    stopReason = frStr switch
+                    {
+                        "stop" => "end_turn",
+                        "length" => "max_tokens",
+                        _ => "end_turn"
+                    };
+                }
+            }
+
+            // 构建 Anthropic Messages 格式
+            var contentArr = new[]
+            {
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "text",
+                    ["text"] = text
+                }
+            };
+
+            var response = new Dictionary<string, object?>
+            {
+                ["id"] = msgId,
+                ["type"] = "message",
+                ["role"] = "assistant",
+                ["content"] = contentArr,
+                ["model"] = model,
+                ["stop_reason"] = stopReason,
+                ["stop_sequence"] = null,
+                ["usage"] = new Dictionary<string, int>
+                {
+                    ["input_tokens"] = inputTokens,
+                    ["output_tokens"] = outputTokens
+                }
+            };
+
+            return JsonSerializer.Serialize(response);
+        }
+        catch { return chatBody; }
+    }
+
+    /// <summary>
+    /// 将 Anthropic Messages 格式转换为 OpenAI Chat Completions 格式
+    /// </summary>
+    private static string ConvertMessagesToChat(string messagesBody)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(messagesBody);
+            var root = doc.RootElement;
+
+            var chatId = "chatcmpl-" + Guid.NewGuid().ToString("N")[..8];
+            var createdUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var model = root.TryGetProperty("model", out var m) ? m.GetString() : "unknown";
+
+            // 从 content 数组中提取文本
+            var text = "";
+            if (root.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in content.EnumerateArray())
+                {
+                    if (item.TryGetProperty("type", out var t) && t.GetString() == "text" &&
+                        item.TryGetProperty("text", out var tx))
+                    {
+                        text = tx.GetString() ?? "";
+                    }
+                }
+            }
+
+            // 提取 usage
+            var inputTokens = 0; var outputTokens = 0;
+            if (root.TryGetProperty("usage", out var usage))
+            {
+                inputTokens = usage.TryGetProperty("input_tokens", out var it) ? it.GetInt32() : 0;
+                outputTokens = usage.TryGetProperty("output_tokens", out var ot) ? ot.GetInt32() : 0;
+            }
+
+            var stopReason = root.TryGetProperty("stop_reason", out var sr) ? sr.GetString() : "stop";
+            var finishReason = stopReason switch
+            {
+                "end_turn" => "stop",
+                "max_tokens" => "length",
+                _ => "stop"
+            };
+
+            return JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["id"] = chatId,
+                ["object"] = "chat.completion",
+                ["created"] = createdUnix,
+                ["model"] = model,
+                ["choices"] = new[]
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["index"] = 0,
+                        ["message"] = new Dictionary<string, object?>
+                        {
+                            ["role"] = "assistant",
+                            ["content"] = text
+                        },
+                        ["finish_reason"] = finishReason
+                    }
+                },
+                ["usage"] = new Dictionary<string, int>
+                {
+                    ["prompt_tokens"] = inputTokens,
+                    ["completion_tokens"] = outputTokens,
+                    ["total_tokens"] = inputTokens + outputTokens
+                }
+            });
+        }
+        catch { return messagesBody; }
+    }
+
+    /// <summary>
+    /// 确定响应体的实际格式（经 ConvertResponseBody 转换后的格式）
+    /// </summary>
+    private static string DetermineResponseFormat(string upstreamPath, LoadBalanceNode node)
+    {
+        // 非 OpenAI 兼容供应商的响应已被 ConvertResponseBody 转换为 Chat 格式
+        var supplierType = node.SupplierType ?? "OpenAI";
+        if (supplierType is not ("OpenAI" or "Azure" or "DeepSeek" or "Groq" or "Together" or "Custom"))
+            return "chat";
+        // OpenAI 兼容供应商：响应格式取决于实际调用的上游路径
+        return GetRequestType(upstreamPath);
+    }
+
+    /// <summary>
+    /// 协议转换：将上游响应从一种格式转换为客户端请求的格式。
+    /// 以 Chat 格式为中间格式，支持 chat ↔ responses ↔ messages 双向转换。
+    /// </summary>
+    private static string ConvertResponseFormat(string body, string upstreamPath, string clientRequestPath, LoadBalanceNode node)
+    {
+        var fromType = DetermineResponseFormat(upstreamPath, node);
+        var toType = GetRequestType(clientRequestPath);
+        if (fromType == toType) return body;
+
+        // 第一步：从源格式转换为 Chat 中间格式
+        var chatBody = fromType switch
+        {
+            "responses" => ConvertResponseToChat(body),
+            "messages" => ConvertMessagesToChat(body),
+            _ => body // already chat
+        };
+
+        // 第二步：从 Chat 中间格式转换为目标格式
+        return toType switch
+        {
+            "responses" => ConvertChatToResponse(chatBody),
+            "messages" => ConvertChatToMessages(chatBody),
+            _ => chatBody // already chat
+        };
+    }
+
+    #endregion
+
+    #region 流式降级（非流式调用 + 模拟 SSE）
+
+    /// <summary>移除请求体中的 stream 标志，转为非流式调用</summary>
+    private static string RemoveStreamFlag(string jsonBody)
+    {
+        return System.Text.RegularExpressions.Regex.Replace(jsonBody,
+            @"""stream""\s*:\s*(true|false)\s*,?\s*", "");
+    }
+
+    /// <summary>
+    /// 将完整响应模拟为 SSE 流式事件推送给客户端
+    /// </summary>
+    private static async Task FakeSseStreamAsync(HttpResponse response, string finalResponse, string requestPath)
+    {
+        response.ContentType = "text/event-stream";
+        response.Headers.CacheControl = "no-cache";
+        response.Headers.Connection = "keep-alive";
+
+        var isChat = requestPath.Contains("/chat/completions");
+        var isMessages = requestPath.Contains("/messages");
+        using var doc = JsonDocument.Parse(finalResponse);
+        var root = doc.RootElement;
+
+        if (isChat)
+        {
+            var id = root.TryGetProperty("id", out var idProp) ? idProp.GetString() : "chatcmpl-xxx";
+            var created = root.TryGetProperty("created", out var createdProp) ? createdProp.GetInt64() : DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var model = root.TryGetProperty("model", out var modelProp) ? modelProp.GetString() : "";
+            var text = "";
+            if (root.TryGetProperty("choices", out var choices) && choices.ValueKind == JsonValueKind.Array && choices.GetArrayLength() > 0)
+            {
+                var choice = choices[0];
+                if (choice.TryGetProperty("message", out var msg) && msg.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.String)
+                    text = content.GetString() ?? "";
+            }
+
+            // 1. role delta
+            var roleEvent = JsonSerializer.Serialize(new
+            {
+                id, @object = "chat.completion.chunk", created, model,
+                choices = new[] { new { index = 0, delta = new { role = "assistant" }, finish_reason = (string?)null } }
+            });
+            await response.WriteAsync($"data: {roleEvent}\n\n", Encoding.UTF8);
+            await response.Body.FlushAsync();
+
+            // 2. content delta（每 ~5 字符一个 chunk）
+            var chunkSize = 5;
+            for (int i = 0; i < text.Length; i += chunkSize)
+            {
+                var chunk = text.Substring(i, Math.Min(chunkSize, text.Length - i));
+                var contentEvent = JsonSerializer.Serialize(new
+                {
+                    id, @object = "chat.completion.chunk", created, model,
+                    choices = new[] { new { index = 0, delta = new { content = chunk }, finish_reason = (string?)null } }
+                });
+                await response.WriteAsync($"data: {contentEvent}\n\n", Encoding.UTF8);
+                await response.Body.FlushAsync();
+            }
+
+            // 3. final chunk
+            var finalChunk = JsonSerializer.Serialize(new
+            {
+                id, @object = "chat.completion.chunk", created, model,
+                choices = new[] { new { index = 0, delta = new { }, finish_reason = "stop" } }
+            });
+            await response.WriteAsync($"data: {finalChunk}\n\n", Encoding.UTF8);
+            await response.Body.FlushAsync();
+
+            // 4. [DONE]
+            await response.WriteAsync("data: [DONE]\n\n", Encoding.UTF8);
+            await response.Body.FlushAsync();
+        }
+        else if (isMessages)
+        {
+            // ======== Anthropic Messages SSE 格式 ========
+            var msgId = root.TryGetProperty("id", out var idProp2) ? idProp2.GetString() : "msg_" + Guid.NewGuid().ToString("N")[..12];
+            var model = root.TryGetProperty("model", out var modelProp2) ? modelProp2.GetString() : "";
+            var text = "";
+            if (root.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in content.EnumerateArray())
+                {
+                    if (item.TryGetProperty("type", out var t) && t.GetString() == "text" &&
+                        item.TryGetProperty("text", out var tx))
+                    {
+                        text = tx.GetString() ?? "";
+                    }
+                }
+            }
+            var stopReason = root.TryGetProperty("stop_reason", out var sr) ? sr.GetString() : "end_turn";
+            var inputTokens = root.TryGetProperty("usage", out var u) &&
+                              u.TryGetProperty("input_tokens", out var it) ? it.GetInt32() : 0;
+            var outputTokens = root.TryGetProperty("usage", out var u2) &&
+                               u2.TryGetProperty("output_tokens", out var ot) ? ot.GetInt32() : 0;
+
+            // 1. message_start
+            var msgStart = new Dictionary<string, object?>
+            {
+                ["type"] = "message_start",
+                ["message"] = new Dictionary<string, object?>
+                {
+                    ["id"] = msgId,
+                    ["type"] = "message",
+                    ["role"] = "assistant",
+                    ["content"] = new object[] { },
+                    ["model"] = model,
+                    ["stop_reason"] = null,
+                    ["stop_sequence"] = null,
+                    ["usage"] = new Dictionary<string, int> { ["input_tokens"] = inputTokens, ["output_tokens"] = 0 }
+                }
+            };
+            await response.WriteAsync($"event: message_start\ndata: {JsonSerializer.Serialize(msgStart)}\n\n", Encoding.UTF8);
+            await response.Body.FlushAsync();
+
+            // 2. content_block_start
+            var blockStart = new Dictionary<string, object?>
+            {
+                ["type"] = "content_block_start",
+                ["index"] = 0,
+                ["content_block"] = new Dictionary<string, object?>
+                {
+                    ["type"] = "text",
+                    ["text"] = ""
+                }
+            };
+            await response.WriteAsync($"event: content_block_start\ndata: {JsonSerializer.Serialize(blockStart)}\n\n", Encoding.UTF8);
+            await response.Body.FlushAsync();
+
+            // 3. content_block_delta（每 ~5 字符一个 chunk）
+            var chunkSize = 5;
+            for (int i = 0; i < text.Length; i += chunkSize)
+            {
+                var chunk = text.Substring(i, Math.Min(chunkSize, text.Length - i));
+                var deltaEvent = new Dictionary<string, object?>
+                {
+                    ["type"] = "content_block_delta",
+                    ["index"] = 0,
+                    ["delta"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "text_delta",
+                        ["text"] = chunk
+                    }
+                };
+                await response.WriteAsync($"event: content_block_delta\ndata: {JsonSerializer.Serialize(deltaEvent)}\n\n", Encoding.UTF8);
+                await response.Body.FlushAsync();
+            }
+
+            // 4. content_block_stop
+            var blockStop = new Dictionary<string, object?>
+            {
+                ["type"] = "content_block_stop",
+                ["index"] = 0
+            };
+            await response.WriteAsync($"event: content_block_stop\ndata: {JsonSerializer.Serialize(blockStop)}\n\n", Encoding.UTF8);
+            await response.Body.FlushAsync();
+
+            // 5. message_delta
+            var msgDelta = new Dictionary<string, object?>
+            {
+                ["type"] = "message_delta",
+                ["delta"] = new Dictionary<string, object?>
+                {
+                    ["stop_reason"] = stopReason,
+                    ["stop_sequence"] = null
+                },
+                ["usage"] = new Dictionary<string, int> { ["output_tokens"] = outputTokens }
+            };
+            await response.WriteAsync($"event: message_delta\ndata: {JsonSerializer.Serialize(msgDelta)}\n\n", Encoding.UTF8);
+            await response.Body.FlushAsync();
+
+            // 6. message_stop
+            var msgStop = new Dictionary<string, object?>
+            {
+                ["type"] = "message_stop"
+            };
+            await response.WriteAsync($"event: message_stop\ndata: {JsonSerializer.Serialize(msgStop)}\n\n", Encoding.UTF8);
+            await response.Body.FlushAsync();
+        }
+        else
+        {
+            // ======== OpenAI Response SSE 格式 ========
+            // 从 output[0].content[0].text 提取文本
+            var text = "";
+            if (root.TryGetProperty("output", out var output) && output.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in output.EnumerateArray())
+                {
+                    if (item.TryGetProperty("type", out var type) && type.GetString() == "message" &&
+                        item.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var part in content.EnumerateArray())
+                        {
+                            if (part.TryGetProperty("type", out var pt) && pt.GetString() == "output_text" &&
+                                part.TryGetProperty("text", out var t))
+                            {
+                                text = t.GetString() ?? "";
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 模拟 Response SSE 事件
+            int seq = 0;
+            var chunkSize = 5;
+            for (int i = 0; i < text.Length; i += chunkSize)
+            {
+                var chunk = text.Substring(i, Math.Min(chunkSize, text.Length - i));
+                seq++;
+                var deltaEvent = JsonSerializer.Serialize(new { delta = chunk, sequence_number = seq });
+                await response.WriteAsync($"event: response.output_text.delta\ndata: {deltaEvent}\n\n", Encoding.UTF8);
+                await response.Body.FlushAsync();
+            }
+
+            // completed 事件
+            var responseId = root.TryGetProperty("id", out var rid) ? rid.GetString() : "resp_xxx";
+            var outArr = root.TryGetProperty("output", out var oa) ? JsonSerializer.Deserialize<object>(oa.GetRawText()) : null;
+            var completedEvent = JsonSerializer.Serialize(new { id = responseId, @object = "response", output = outArr });
+            await response.WriteAsync($"event: response.completed\ndata: {completedEvent}\n\n", Encoding.UTF8);
+            await response.Body.FlushAsync();
+        }
+    }
+
+    #endregion
 
     private (int input, int output) ExtractTokenUsage(string responseBody)
     {

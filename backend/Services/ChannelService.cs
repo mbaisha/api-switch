@@ -86,6 +86,7 @@ public class ChannelService
                         ApiKey = key.KeyValue,
                         ApiKeyId = key.Id,
                         ProtocolType = channel.ProtocolType,
+                        SupportedPaths = channel.SupportedPaths ?? "chat",
                         TimeoutSeconds = channel.TimeoutSeconds,
                         SseEnabled = channel.SseEnabled,
                         OriginalModelId = chain.OriginalModelId,
@@ -123,6 +124,7 @@ public class ChannelService
                         ApiKey = key.KeyValue,
                         ApiKeyId = key.Id,
                         ProtocolType = channel.ProtocolType,
+                        SupportedPaths = channel.SupportedPaths ?? "chat",
                         TimeoutSeconds = channel.TimeoutSeconds,
                         SseEnabled = channel.SseEnabled,
                         OriginalModelId = model.OriginalModelId,
@@ -158,6 +160,8 @@ public class LoadBalanceNode
     public string ApiKey { get; set; } = string.Empty;
     public long ApiKeyId { get; set; }
     public string ProtocolType { get; set; } = "Chat";
+    /// <summary>支持的接口路径（逗号分隔: chat,responses）</summary>
+    public string SupportedPaths { get; set; } = "chat";
     public int TimeoutSeconds { get; set; } = 30;
     public bool SseEnabled { get; set; } = true;
     public string OriginalModelId { get; set; } = string.Empty;
