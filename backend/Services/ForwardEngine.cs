@@ -128,6 +128,9 @@ public class ForwardEngine
                 var bodyForUpstream = needsConversion ? ConvertRequestToChat(requestBody, requestPath) : requestBody;
                 var convertedBody = ConvertRequestBody(bodyForUpstream, upstreamPath, node);
 
+                _logger.LogInformation("发送到上游 {Url} 的请求体: {Body}", fullUrl, 
+                    convertedBody.Length > 1000 ? convertedBody[..1000] + "..." : convertedBody);
+
                 try
                 {
                     var client = _httpClientFactory.CreateClient("AIClient");
@@ -294,6 +297,9 @@ public class ForwardEngine
                 // 协议降级时，先将请求体转为 Chat 格式（如 Responses input → messages）
                 var bodyForUpstream = needsConversion ? ConvertRequestToChat(requestBody, requestPath) : requestBody;
                 var convertedBody = ConvertRequestBody(bodyForUpstream, upstreamPath, node);
+
+                _logger.LogInformation("发送到上游 {Url} 的请求体: {Body}", fullUrl,
+                    convertedBody.Length > 1000 ? convertedBody[..1000] + "..." : convertedBody);
 
                 if (needsConversion)
                 {
@@ -1028,7 +1034,7 @@ public class ForwardEngine
                 {
                     chatObj["stop"] = stop.ValueKind == JsonValueKind.String
                         ? stop.GetString()
-                        : stop.GetRawText();
+                        : JsonSerializer.Deserialize<object>(stop.GetRawText());
                 }
 
                 return JsonSerializer.Serialize(chatObj);
