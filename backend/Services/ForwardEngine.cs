@@ -1038,9 +1038,21 @@ public class ForwardEngine
                         : JsonSerializer.Deserialize<object>(stop.GetRawText());
                 }
 
-                // tools / tool_choice（参考 px.js 透传）
-                if (root.TryGetProperty("tools", out var tools))
-                    chatObj["tools"] = JsonSerializer.Deserialize<object>(tools.GetRawText());
+                // tools / tool_choice（参考 px.js 透传，但只保留 type=function 的工具）
+                if (root.TryGetProperty("tools", out var tools) && tools.ValueKind == JsonValueKind.Array)
+                {
+                    var functionTools = new List<object>();
+                    foreach (var tool in tools.EnumerateArray())
+                    {
+                        if (tool.TryGetProperty("type", out var toolType) &&
+                            toolType.GetString() == "function")
+                        {
+                            functionTools.Add(JsonSerializer.Deserialize<object>(tool.GetRawText())!);
+                        }
+                    }
+                    if (functionTools.Count > 0)
+                        chatObj["tools"] = functionTools;
+                }
                 if (root.TryGetProperty("tool_choice", out var toolChoice))
                     chatObj["tool_choice"] = JsonSerializer.Deserialize<object>(toolChoice.GetRawText());
 
