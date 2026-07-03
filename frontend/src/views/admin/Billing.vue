@@ -25,8 +25,8 @@
           </a-col>
           <a-col :span="4">
             <a-space>
-              <a-button type="primary" @click="loadRecords">查询</a-button>
-              <a-button @click="loadSummary">汇总</a-button>
+              <a-button type="primary" @click="loadRecords()">查询</a-button>
+              <a-button @click="loadSummary()">汇总</a-button>
             </a-space>
           </a-col>
         </a-row>
@@ -39,7 +39,7 @@
           <a-col :span="6"><a-card><a-statistic title="总输出Token" :value="summary.totalOutputTokens" /></a-card></a-col>
         </a-row>
 
-        <a-table :columns="recordColumns" :data="records" row-key="id" :loading="loading" class="table">
+        <a-table :columns="recordColumns" :data="records" row-key="id" :loading="loading" :pagination="false" class="table">
           <template #createdAt="{ record }">
             {{ formatBeijingTime(record.createdAt) }}
           </template>
@@ -189,7 +189,7 @@ async function loadRules() {
 
 const ruleColumns = [
   { title: 'ID', dataIndex: 'id', width: 60 },
-  { title: '令牌ID', dataIndex: 'tokenId', width: 70 },
+  { title: '令牌ID', dataIndex: 'tokenId', width: 120 },
   { title: '模型', dataIndex: 'customModelId' },
   { title: '输入单价', slotName: 'inputPrice', width: 120 },
   { title: '输出单价', slotName: 'outputPrice', width: 120 },

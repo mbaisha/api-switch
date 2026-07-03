@@ -34,7 +34,7 @@
           </a-col>
         </a-row>
 
-        <a-table :columns="callColumns" :data="callLogs" row-key="id" :loading="loading">
+        <a-table :columns="callColumns" :data="callLogs" row-key="id" :loading="loading" :pagination="false">
           <template #status="{ record }">
             <a-tag :color="record.status === 'Success' ? 'green' : 'red'">
               {{ record.status === 'Success' ? '成功' : '失败' }}
@@ -78,7 +78,7 @@
           </a-col>
         </a-row>
 
-        <a-table :columns="opColumns" :data="opLogs" row-key="id" :loading="loading">
+        <a-table :columns="opColumns" :data="opLogs" row-key="id" :loading="loading" :pagination="false">
           <template #createdAt="{ record }">
             {{ formatBeijingTime(record.createdAt) }}
           </template>
