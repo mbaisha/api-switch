@@ -15,11 +15,9 @@ AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Serilog 配置
+// Serilog 配置 - 从 appsettings.json 读取（Console + File）
 Log.Logger = new LoggerConfiguration()
     .ReadFrom.Configuration(builder.Configuration)
-    .WriteTo.Console()
-    .WriteTo.File("logs/api-.log", rollingInterval: RollingInterval.Day)
     .CreateLogger();
 builder.Host.UseSerilog();
 
