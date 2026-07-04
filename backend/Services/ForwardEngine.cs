@@ -145,7 +145,7 @@ public class ForwardEngine
                     {
                         Content = new StringContent(convertedBody, Encoding.UTF8, "application/json")
                     };
-                    httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", node.ApiKey);
+                    SetAuthHeaders(httpRequest, node.SupplierType, node.ApiKey);
                     httpRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
                     var response = await client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead);
@@ -327,7 +327,7 @@ public class ForwardEngine
                         {
                             Content = new StringContent(fallbackBody, Encoding.UTF8, "application/json")
                         };
-                        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", node.ApiKey);
+                        SetAuthHeaders(httpRequest, node.SupplierType, node.ApiKey);
 
                         var response = await client.SendAsync(httpRequest);
                         var responseBody = await response.Content.ReadAsStringAsync();
@@ -403,7 +403,7 @@ public class ForwardEngine
                     {
                         Content = new StringContent(convertedBody, Encoding.UTF8, "application/json")
                     };
-                    httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", node.ApiKey);
+                    SetAuthHeaders(httpRequest, node.SupplierType, node.ApiKey);
                     httpRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
 
                     var response = await client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead);
@@ -809,7 +809,15 @@ public class ForwardEngine
             return ReplaceModelId(body, node.OriginalModelId);
         }
 
-        // 非 OpenAI 协议需要转换
+        // 如果请求体已经是供应商原生格式（上游通过 SupportedPaths 原生支持），
+        // 则只需替换模型ID，不做额外的 body 重构建（避免丢掉字段）
+        if ((supplierType == "Anthropic" && requestPath.Contains("/v1/messages")) ||
+            (supplierType == "Google" && requestPath.Contains("generateContent")))
+        {
+            return ReplaceModelId(body, node.OriginalModelId);
+        }
+
+        // 非 OpenAI 协议需要转换（从 Chat 格式转换为供应商特定格式）
         try
         {
             using var doc = JsonDocument.Parse(body);
@@ -949,7 +957,8 @@ public class ForwardEngine
 
     /// <summary>
     /// 当协议降级时，将客户端请求体从源格式转换为 Chat 格式。
-    /// 例如：Responses 格式（input 字段）→ Chat 格式（messages 字段）
+    /// 支持：Responses 格式（input 字段）→ Chat 格式（messages 字段）
+    ///       Messages 格式（Anthropic）→ Chat 格式
     /// </summary>
     private static string ConvertRequestToChat(string body, string clientRequestPath)
     {
@@ -958,8 +967,6 @@ public class ForwardEngine
 
         try
         {
-            // 目前只处理 Responses 格式 → Chat 格式
-            // Messages(Anthropic)格式与 Chat 格式结构相似（都有 messages 数组），可直接透传
             if (clientType == "responses")
             {
                 using var doc = JsonDocument.Parse(body);
@@ -1065,6 +1072,91 @@ public class ForwardEngine
                 }
                 if (root.TryGetProperty("tool_choice", out var toolChoice))
                     chatObj["tool_choice"] = JsonSerializer.Deserialize<object>(toolChoice.GetRawText());
+
+                return JsonSerializer.Serialize(chatObj);
+            }
+
+            // Messages (Anthropic) 格式 → Chat 格式
+            if (clientType == "messages")
+            {
+                using var doc = JsonDocument.Parse(body);
+                var root = doc.RootElement;
+                var chatObj = new Dictionary<string, object?>();
+
+                // 保留 model
+                if (root.TryGetProperty("model", out var model))
+                    chatObj["model"] = model.GetString();
+
+                // 转换 messages：将 system 角色消息提到最前面（OpenAI 要求）
+                var systemMessages = new List<object>();
+                var otherMessages = new List<object>();
+                if (root.TryGetProperty("messages", out var msgs) && msgs.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var msg in msgs.EnumerateArray())
+                    {
+                        var role = msg.TryGetProperty("role", out var r) ? r.GetString() : "user";
+                        var content = msg.TryGetProperty("content", out var c) ? c : default;
+                        var entry = new Dictionary<string, object?>
+                        {
+                            ["role"] = role,
+                            ["content"] = NormalizeContentForChat(content)
+                        };
+                        if (role == "system")
+                            systemMessages.Add(entry);
+                        else
+                            otherMessages.Add(entry);
+                    }
+                }
+
+                // 提取 Anthropic 的 system 顶层字段，也作为 system 消息加到最前面
+                string? topSystem = null;
+                if (root.TryGetProperty("system", out var system))
+                {
+                    if (system.ValueKind == JsonValueKind.String)
+                        topSystem = system.GetString();
+                    else if (system.ValueKind == JsonValueKind.Array)
+                    {
+                        // Anthropic 允许 system 为 content block 数组
+                        var parts = new List<string>();
+                        foreach (var item in system.EnumerateArray())
+                        {
+                            if (item.TryGetProperty("text", out var t))
+                                parts.Add(t.GetString() ?? "");
+                        }
+                        if (parts.Count > 0)
+                            topSystem = string.Join("\n\n", parts);
+                    }
+                }
+                if (!string.IsNullOrEmpty(topSystem))
+                {
+                    systemMessages.Insert(0, new Dictionary<string, object?>
+                    {
+                        ["role"] = "system",
+                        ["content"] = topSystem
+                    });
+                }
+
+                var messages = new List<object>();
+                messages.AddRange(systemMessages);
+                messages.AddRange(otherMessages);
+                chatObj["messages"] = messages;
+
+                // 保留 stream
+                if (root.TryGetProperty("stream", out var stream))
+                    chatObj["stream"] = stream.GetBoolean();
+
+                // max_tokens
+                if (root.TryGetProperty("max_tokens", out var maxTok))
+                    chatObj["max_tokens"] = maxTok.GetInt32();
+
+                // 保留通用参数
+                if (root.TryGetProperty("temperature", out var temp))
+                    chatObj["temperature"] = temp.GetDouble();
+                if (root.TryGetProperty("top_p", out var topP))
+                    chatObj["top_p"] = topP.GetDouble();
+                // Anthropic stop_sequences → OpenAI stop
+                if (root.TryGetProperty("stop_sequences", out var stopSeq) && stopSeq.ValueKind == JsonValueKind.Array)
+                    chatObj["stop"] = JsonSerializer.Deserialize<object>(stopSeq.GetRawText());
 
                 return JsonSerializer.Serialize(chatObj);
             }
@@ -1689,9 +1781,25 @@ public class ForwardEngine
     }
 
     /// <summary>
+    /// 设置上游请求的认证头。
+    /// Anthropic 使用 x-api-key，其他供应商使用 Authorization: Bearer。
+    /// 对 Anthropic 两种都设置以兼容不同客户端的用法。
+    /// </summary>
+    private static void SetAuthHeaders(HttpRequestMessage request, string supplierType, string apiKey)
+    {
+        if (supplierType == "Anthropic")
+        {
+            request.Headers.TryAddWithoutValidation("x-api-key", apiKey);
+        }
+        // 所有供应商都设置 Authorization: Bearer（Anthropic 也支持这种）
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+    }
+
+    /// <summary>
     /// 确定上游实际调用的路径，以及是否需要协议转换。
-    /// SupportedPaths 表示"下游可调用哪些路径"（入口路由），
-    /// ProtocolType 表示"上游实际使用什么协议"，上游路径完全由 ProtocolType 决定。
+    /// 优先检查 SupportedPaths（上游原生支持的协议列表），
+    /// 如果客户端请求的协议在上游支持范围内则直接透传，
+    /// 否则降级到 ProtocolType 指定的默认协议。
     /// </summary>
     /// <param name="clientPath">客户端请求路径，如 /v1/chat/completions 或 /v1/responses 或 /v1/messages</param>
     /// <param name="node">当前负载节点</param>
@@ -1701,7 +1809,24 @@ public class ForwardEngine
     {
         var clientType = GetRequestType(clientPath);
 
-        // 上游实际支持的协议类型（由 ProtocolType 决定）
+        // 检查上游 SupportedPaths 是否原生支持客户端请求的协议类型
+        var supportedPaths = (node.SupportedPaths ?? "chat")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(p => p.Trim().ToLowerInvariant())
+            .ToHashSet();
+
+        if (supportedPaths.Contains(clientType))
+        {
+            // 上游原生支持该协议，直接透传（只需替换模型ID）
+            var directPath = GetTypePath(clientType);
+            return (directPath, false);
+        }
+
+        // 不支持则降级到 ProtocolType 指定的默认协议
+        _logger.LogWarning(
+            "协议降级：客户端请求 {ClientPath}（类型={ClientType}），上游 SupportedPaths=[{Paths}] 不支持，降级到默认协议 {Protocol}",
+            clientPath, clientType, string.Join(",", supportedPaths), node.ProtocolType);
+
         var upstreamType = (node.ProtocolType ?? "Chat").ToLowerInvariant() switch
         {
             "response" => "responses",
@@ -1714,7 +1839,7 @@ public class ForwardEngine
         if (needsConversion)
         {
             _logger.LogWarning(
-                "协议转换：客户端请求 {ClientPath}（类型={ClientType}），上游协议={Protocol}，上游路径={Upstream}",
+                "协议转换：客户端请求 {ClientPath}（类型={ClientType}），降级后上游协议={Protocol}，上游路径={Upstream}",
                 clientPath, clientType, node.ProtocolType, upstreamPath);
         }
 
