@@ -138,7 +138,15 @@ public class ForwardEngine
                 {
                     // 透传：只替换 model ID，走客户端原始路径
                     fullUrl = BuildDownstreamUrl(node.ApiAddress, node.SupplierType, clientPath, node.OriginalModelId);
-                    convertedBody = ConvertRequestBody(requestBody, clientPath, node);
+                    // Messages 格式透传时，规整 system 消息顺序（放最前面）
+                    if (clientType == "messages")
+                    {
+                        convertedBody = NormalizeMessagesPassthrough(requestBody, node);
+                    }
+                    else
+                    {
+                        convertedBody = ConvertRequestBody(requestBody, clientPath, node);
+                    }
                     _logger.LogInformation("透传 → 渠道 {Channel}/{Model}，路径 {Path}",
                         node.ChannelName, node.OriginalModelId, clientPath);
                 }
@@ -338,7 +346,10 @@ public class ForwardEngine
                 if (doPassthrough)
                 {
                     fullUrl = BuildDownstreamUrl(node.ApiAddress, node.SupplierType, clientPath, node.OriginalModelId);
-                    convertedBody = ConvertRequestBody(requestBody, clientPath, node);
+                    if (clientType == "messages")
+                        convertedBody = NormalizeMessagesPassthrough(requestBody, node);
+                    else
+                        convertedBody = ConvertRequestBody(requestBody, clientPath, node);
                 }
                 else
                 {
@@ -846,6 +857,96 @@ public class ForwardEngine
                 return titleMatch.Groups[1].Value;
 
             return responseBody[..Math.Min(responseBody.Length, 200)];
+        }
+    }
+
+    /// <summary>
+    /// Messages 透传时规整：将 messages 中的 system 角色提取到顶层 system 字段，并替换 model ID
+    /// Anthropic Messages API 规范：system 不能在 messages 数组中，必须用顶层字段
+    /// </summary>
+    private string NormalizeMessagesPassthrough(string body, LoadBalanceNode node)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            var dict = new Dictionary<string, object?>();
+
+            // model
+            dict["model"] = node.OriginalModelId;
+
+            // 收集顶层 system 和 messages 中的 system 角色
+            var systemParts = new List<string>();
+            if (root.TryGetProperty("system", out var topSys))
+            {
+                if (topSys.ValueKind == JsonValueKind.String)
+                    systemParts.Add(topSys.GetString() ?? "");
+                else if (topSys.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in topSys.EnumerateArray())
+                    {
+                        if (item.TryGetProperty("text", out var t))
+                            systemParts.Add(t.GetString() ?? "");
+                    }
+                }
+            }
+
+            // 处理 messages：提取 system 角色，非 system 保留原序
+            var otherMsgs = new List<object>();
+            if (root.TryGetProperty("messages", out var msgs) && msgs.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var msg in msgs.EnumerateArray())
+                {
+                    var role = msg.TryGetProperty("role", out var r) ? r.GetString() : "user";
+                    if (role == "system")
+                    {
+                        if (msg.TryGetProperty("content", out var c))
+                        {
+                            if (c.ValueKind == JsonValueKind.String)
+                                systemParts.Add(c.GetString() ?? "");
+                            else if (c.ValueKind == JsonValueKind.Array)
+                            {
+                                foreach (var block in c.EnumerateArray())
+                                {
+                                    if (block.TryGetProperty("text", out var t))
+                                        systemParts.Add(t.GetString() ?? "");
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        var content = msg.TryGetProperty("content", out var ct) ? ct : default;
+                        otherMsgs.Add(new Dictionary<string, object?>
+                        {
+                            ["role"] = role,
+                            ["content"] = content.ValueKind == JsonValueKind.String
+                                ? content.GetString()
+                                : JsonSerializer.Deserialize<object>(content.GetRawText())
+                        });
+                    }
+                }
+            }
+
+            // 设置顶层 system
+            if (systemParts.Count > 0)
+                dict["system"] = string.Join("\n\n", systemParts);
+
+            dict["messages"] = otherMsgs;
+
+            // 保留其他字段
+            foreach (var prop in root.EnumerateObject())
+            {
+                var name = prop.Name;
+                if (name != "model" && name != "messages" && name != "system")
+                    dict[name] = JsonSerializer.Deserialize<object>(prop.Value.GetRawText());
+            }
+
+            return JsonSerializer.Serialize(dict);
+        }
+        catch
+        {
+            return ConvertRequestBody(body, "/v1/messages", node);
         }
     }
 
