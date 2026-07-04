@@ -321,26 +321,48 @@ public class ForwardEngine
             // 轮询选择 API Key
             var candidates = await SelectNodesWeightedRoundRobin(sseNodes);
 
+            var clientType = GetRequestType(requestPath);
+            var clientPath = GetTypePath(clientType);
+
             foreach (var node in candidates)
             {
-                var (upstreamPath, needsConversion) = DetermineUpstreamPath(requestPath, node);
-                var fullUrl = BuildDownstreamUrl(node.ApiAddress, node.SupplierType, upstreamPath, node.OriginalModelId);
-                // 协议降级时，根据上游协议类型选择合适的请求体转换
-                var isMessagesUpstream = "Messages".Equals(node.ProtocolType, StringComparison.OrdinalIgnoreCase);
-                var bodyForUpstream = needsConversion
-                    ? (isMessagesUpstream
+                var passthroughPaths = (node.PassthroughPaths ?? node.SupportedPaths ?? "chat")
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Select(p => p.Trim().ToLowerInvariant())
+                    .ToHashSet();
+                var doPassthrough = passthroughPaths.Contains(clientType);
+
+                string fullUrl;
+                string convertedBody;
+
+                if (doPassthrough)
+                {
+                    fullUrl = BuildDownstreamUrl(node.ApiAddress, node.SupplierType, clientPath, node.OriginalModelId);
+                    convertedBody = ConvertRequestBody(requestBody, clientPath, node);
+                }
+                else
+                {
+                    var fallbackTarget = (node.FallbackTarget ?? node.ProtocolType ?? "Chat").ToLowerInvariant() switch
+                    {
+                        "response" or "responses" => "responses",
+                        "messages" => "messages",
+                        _ => "chat"
+                    };
+                    var downstreamPath = GetTypePath(fallbackTarget);
+                    fullUrl = BuildDownstreamUrl(node.ApiAddress, node.SupplierType, downstreamPath, node.OriginalModelId);
+                    var bodyForUpstream = fallbackTarget == "messages"
                         ? ConvertRequestToMessages(requestBody, node)
-                        : ConvertRequestToChat(requestBody, requestPath))
-                    : requestBody;
-                var convertedBody = ConvertRequestBody(bodyForUpstream, upstreamPath, node);
+                        : ConvertRequestToChat(requestBody, requestPath);
+                    convertedBody = ConvertRequestBody(bodyForUpstream, downstreamPath, node);
+                }
 
                 _logger.LogInformation("发送到上游 {Url} 的请求体: {Body}", fullUrl,
                     convertedBody.Length > 1000 ? convertedBody[..1000] + "..." : convertedBody);
 
-                if (needsConversion)
+                if (!doPassthrough)
                 {
                     // ======== 非流式降级路径 ========
-                    _logger.LogInformation("协议降级非流式：客户端 {Path} → 上游 {Url}，非流式调用后模拟 SSE",
+                    _logger.LogInformation("降级非流式：客户端 {Path} → 上游 {Url}，非流式调用后模拟 SSE",
                         requestPath, fullUrl);
                     var fallbackBody = RemoveStreamFlag(convertedBody);
 
@@ -387,7 +409,9 @@ public class ForwardEngine
 
                         // 成功！转换响应 → 模拟 SSE
                         var baseResponse = ConvertResponseBody(responseBody, node.ProtocolType, requestPath, node);
-                        var finalResponse = ConvertResponseFormat(baseResponse, upstreamPath, requestPath, node);
+                        var finalResponse = doPassthrough
+                            ? baseResponse
+                            : ConvertResponseFormat(baseResponse, "/v1/chat/completions", requestPath, node);
 
                         await FakeSseStreamAsync(context.Response, finalResponse, requestPath);
 
