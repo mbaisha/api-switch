@@ -122,15 +122,6 @@
                 </a-radio-group>
               </a-form-item>
             </a-col>
-            <a-col :span="12">
-              <a-form-item label="默认协议（旧版兼容）">
-                <a-radio-group v-model="wizardForm.protocolType">
-                  <a-radio value="Chat">Chat</a-radio>
-                  <a-radio value="Response">Response</a-radio>
-                  <a-radio value="Messages">Messages</a-radio>
-                </a-radio-group>
-              </a-form-item>
-            </a-col>
           </a-row>
         </template>
         <template v-else>
@@ -270,7 +261,8 @@
           <a-descriptions-item label="名称">{{ wizardForm.name }}</a-descriptions-item>
           <a-descriptions-item label="Base URL">{{ wizardForm.apiAddress }}</a-descriptions-item>
           <a-descriptions-item v-if="currentPreset?.isOpenAIProtocol" label="接口路径">{{ wizardForm._supportedPathList.join(', ') }}</a-descriptions-item>
-          <a-descriptions-item v-if="currentPreset?.isOpenAIProtocol" label="默认协议">{{ wizardForm.protocolType }}</a-descriptions-item>
+          <a-descriptions-item v-if="currentPreset?.isOpenAIProtocol" label="透传路径">{{ (wizardForm._passthroughPathList || []).join(', ') }}</a-descriptions-item>
+          <a-descriptions-item v-if="currentPreset?.isOpenAIProtocol" label="降级目标">{{ wizardForm.fallbackTarget || 'Chat' }}</a-descriptions-item>
           <a-descriptions-item label="SSE">{{ wizardForm.sseEnabled ? '启用' : '禁用' }}</a-descriptions-item>
           <a-descriptions-item label="密钥数量">{{ parsedKeysCount }} 个</a-descriptions-item>
           <a-descriptions-item label="模型数量">{{ selectedPresetModels.length + manualModels.length }} 个</a-descriptions-item>
@@ -564,7 +556,7 @@ const wizardForm = reactive({
   name: '', remark: '', supplierType: 'OpenAI', apiAddress: '',
   timeoutSeconds: 30, cooldownSeconds: 60, protocolType: 'Chat', fallbackTarget: 'Chat', sseEnabled: true,
   _passthroughPathList: ['chat','responses','messages'],
-  apiKeys: [], _availableModels: [], _supportsResponses: false, _supportedPathList: ['chat']
+  apiKeys: [], _availableModels: [], _supportsResponses: true, _supportedPathList: ['chat', 'responses', 'messages']
 })
 const keysTextarea = ref('')
 const modelBatchCustomId = ref('')
@@ -589,7 +581,7 @@ function resetWizardForm() {
   Object.assign(wizardForm, {
     name: '', remark: '', supplierType: 'OpenAI', apiAddress: '',
     timeoutSeconds: 30, cooldownSeconds: 60, protocolType: 'Chat', sseEnabled: true,
-    apiKeys: [], _availableModels: [], _supportsResponses: false, _supportedPathList: ['chat']
+    apiKeys: [], _availableModels: [], _supportsResponses: true, _supportedPathList: ['chat', 'responses', 'messages']
   })
   keysTextarea.value = ''
   modelBatchCustomId.value = ''
@@ -604,12 +596,13 @@ function selectSupplier(preset) {
   wizardForm.supplierType = preset.type
   wizardForm.apiAddress = preset.defaultApi
   wizardForm._availableModels = preset.defaultModels || []
-  wizardForm._supportedPathList = preset.supportedPaths || ['chat']
-  wizardForm._supportsResponses = (preset.supportedPaths || []).includes('responses')
-  wizardForm._supportsMessages = (preset.supportedPaths || []).includes('messages')
+  wizardForm._supportedPathList = ['chat', 'responses', 'messages']
+  wizardForm._passthroughPathList = ['chat', 'responses', 'messages']
+  wizardForm._supportsResponses = true
+  wizardForm._supportsMessages = true
   if (!preset.isOpenAIProtocol) {
     wizardForm.protocolType = 'Chat'
-    wizardForm._supportedPathList = preset.supportedPaths || []
+    wizardForm._supportedPathList = ['chat', 'responses', 'messages']
   }
   wizardStep.value = 1  // 新建模式下进入"配置参数"
 }
@@ -668,7 +661,8 @@ async function submitWizard() {
         supplierType: wizardForm.supplierType, apiAddress: wizardForm.apiAddress,
         timeoutSeconds: wizardForm.timeoutSeconds, cooldownSeconds: wizardForm.cooldownSeconds,
         protocolType: wizardForm.protocolType, sseEnabled: wizardForm.sseEnabled,
-        supportedPaths, enabled: existingChannel?.enabled ?? true
+        supportedPaths, passthroughPaths: (wizardForm._passthroughPathList || []).join(','),
+        fallbackTarget: wizardForm.fallbackTarget, enabled: existingChannel?.enabled ?? true
       })
       // 编辑时也保存密钥（如果有新输入的）
       if (apiKeys.length > 0) {
@@ -685,6 +679,8 @@ async function submitWizard() {
         supplierType: wizardForm.supplierType, apiAddress: wizardForm.apiAddress,
         timeoutSeconds: wizardForm.timeoutSeconds, cooldownSeconds: wizardForm.cooldownSeconds,
         protocolType: wizardForm.protocolType, supportedPaths,
+        passthroughPaths: (wizardForm._passthroughPathList || []).join(','),
+        fallbackTarget: wizardForm.fallbackTarget,
         sseEnabled: wizardForm.sseEnabled, apiKeys, models: allModels
       }
       const res = await channelApi.create(payload)
