@@ -66,6 +66,8 @@ public class ChannelController : ControllerBase
             SseEnabled = request.SseEnabled,
             ProtocolType = request.ProtocolType,
             SupportedPaths = request.SupportedPaths,
+            PassthroughPaths = request.PassthroughPaths ?? request.SupportedPaths,
+            FallbackTarget = request.FallbackTarget ?? request.ProtocolType,
             CooldownSeconds = request.CooldownSeconds,
             Enabled = true,
             CreatedAt = DateTime.UtcNow,
@@ -119,7 +121,9 @@ public class ChannelController : ControllerBase
         existing.TimeoutSeconds = channel.TimeoutSeconds;
         existing.SseEnabled = channel.SseEnabled;
         existing.ProtocolType = channel.ProtocolType;
+        existing.PassthroughPaths = channel.PassthroughPaths ?? channel.SupportedPaths;
         existing.SupportedPaths = channel.SupportedPaths;
+        existing.FallbackTarget = channel.FallbackTarget ?? channel.ProtocolType;
         existing.CooldownSeconds = channel.CooldownSeconds;
         existing.Enabled = channel.Enabled;
         existing.UpdatedAt = DateTime.UtcNow;
@@ -539,6 +543,8 @@ public class CreateChannelRequest
     public bool SseEnabled { get; set; } = true;
     public string ProtocolType { get; set; } = "Chat";
     public string? SupportedPaths { get; set; } = "chat";
+    public string? PassthroughPaths { get; set; }
+    public string? FallbackTarget { get; set; }
     public int CooldownSeconds { get; set; } = 60;
     public List<string>? ApiKeys { get; set; }
     public List<ModelEntry>? Models { get; set; }

@@ -37,9 +37,17 @@ public class Channel
     [Column(StringLength = 20)]
     public string ProtocolType { get; set; } = "Chat";
 
-    /// <summary>支持的接口路径（逗号分隔: chat,responses）</summary>
+    /// <summary>支持的接口路径（逗号分隔: chat,responses,messages）</summary>
     [Column(StringLength = 200)]
     public string? SupportedPaths { get; set; } = "chat";
+
+    /// <summary>支持透传的路径（逗号分隔），勾选了直接透传不做降级</summary>
+    [Column(StringLength = 200)]
+    public string? PassthroughPaths { get; set; } = "chat";
+
+    /// <summary>降级目标协议: Chat / Responses / Messages</summary>
+    [Column(StringLength = 20)]
+    public string FallbackTarget { get; set; } = "Chat";
 
     /// <summary>模型冷却时长(秒)</summary>
     public int CooldownSeconds { get; set; } = 60;

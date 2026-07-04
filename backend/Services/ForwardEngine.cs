@@ -114,6 +114,9 @@ public class ForwardEngine
             var candidates = await SelectNodesWeightedRoundRobin(activeNodes);
 
             bool anyAttempted = false;
+            var clientType = GetRequestType(requestPath);
+            var clientPath = GetTypePath(clientType);
+
             foreach (var node in candidates)
             {
                 anyAttempted = true;
@@ -121,17 +124,42 @@ public class ForwardEngine
                     node.ChannelName, node.OriginalModelId,
                     node.ApiKey[..Math.Min(node.ApiKey.Length, 8)], attempt + 1);
 
-                // 协议协商：检查上游是否支持客户端请求的路径，不支持则降级到默认协议
-                var (upstreamPath, needsConversion) = DetermineUpstreamPath(requestPath, node);
-                var fullUrl = BuildDownstreamUrl(node.ApiAddress, node.SupplierType, upstreamPath, node.OriginalModelId);
-                // 协议降级时，根据上游协议类型选择合适的请求体转换
-                var isMessagesUpstream = "Messages".Equals(node.ProtocolType, StringComparison.OrdinalIgnoreCase);
-                var bodyForUpstream = needsConversion
-                    ? (isMessagesUpstream
+                // 检查该路径是否勾选了「支持透传」
+                var passthroughPaths = (node.PassthroughPaths ?? node.SupportedPaths ?? "chat")
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Select(p => p.Trim().ToLowerInvariant())
+                    .ToHashSet();
+                var doPassthrough = passthroughPaths.Contains(clientType);
+
+                string fullUrl;
+                string convertedBody;
+
+                if (doPassthrough)
+                {
+                    // 透传：只替换 model ID，走客户端原始路径
+                    fullUrl = BuildDownstreamUrl(node.ApiAddress, node.SupplierType, clientPath, node.OriginalModelId);
+                    convertedBody = ConvertRequestBody(requestBody, clientPath, node);
+                    _logger.LogInformation("透传 → 渠道 {Channel}/{Model}，路径 {Path}",
+                        node.ChannelName, node.OriginalModelId, clientPath);
+                }
+                else
+                {
+                    // 降级：转换到 FallbackTarget 格式
+                    var fallbackTarget = (node.FallbackTarget ?? node.ProtocolType ?? "Chat").ToLowerInvariant() switch
+                    {
+                        "response" or "responses" => "responses",
+                        "messages" => "messages",
+                        _ => "chat"
+                    };
+                    var downstreamPath = GetTypePath(fallbackTarget);
+                    fullUrl = BuildDownstreamUrl(node.ApiAddress, node.SupplierType, downstreamPath, node.OriginalModelId);
+                    var bodyForUpstream = fallbackTarget == "messages"
                         ? ConvertRequestToMessages(requestBody, node)
-                        : ConvertRequestToChat(requestBody, requestPath))
-                    : requestBody;
-                var convertedBody = ConvertRequestBody(bodyForUpstream, upstreamPath, node);
+                        : ConvertRequestToChat(requestBody, requestPath);
+                    convertedBody = ConvertRequestBody(bodyForUpstream, downstreamPath, node);
+                    _logger.LogInformation("降级 → 渠道 {Channel}/{Model}，目标={Fallback}，路径 {Path}",
+                        node.ChannelName, node.OriginalModelId, fallbackTarget, downstreamPath);
+                }
 
                 _logger.LogInformation("发送到上游 {Url} 的请求体: {Body}", fullUrl, 
                     convertedBody.Length > 1000 ? convertedBody[..1000] + "..." : convertedBody);
@@ -182,9 +210,7 @@ public class ForwardEngine
 
                     // 成功！
                     var baseResponse = ConvertResponseBody(responseBody, node.ProtocolType, requestPath, node);
-                    var convertedResponse = needsConversion
-                        ? ConvertResponseFormat(baseResponse, upstreamPath, requestPath, node)
-                        : baseResponse;
+                    var convertedResponse = baseResponse;
                     var (inputTokens, outputTokens) = ExtractTokenUsage(convertedResponse);
 
                     await _tokenService.RecordUsage(token.Id, inputTokens, outputTokens);

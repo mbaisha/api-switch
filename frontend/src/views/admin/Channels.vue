@@ -94,7 +94,7 @@
         <template v-if="currentPreset?.isOpenAIProtocol">
           <a-row :gutter="16">
             <a-col :span="12">
-              <a-form-item label="接口路径">
+              <a-form-item label="暴露端口（下游可调用）">
                 <a-checkbox-group v-model="wizardForm._supportedPathList">
                   <a-checkbox value="chat">/v1/chat/completions</a-checkbox>
                   <a-checkbox value="responses">/v1/responses</a-checkbox>
@@ -103,7 +103,27 @@
               </a-form-item>
             </a-col>
             <a-col :span="12">
-              <a-form-item label="默认协议">
+              <a-form-item label="透传（直通不降级）">
+                <a-checkbox-group v-model="wizardForm._passthroughPathList">
+                  <a-checkbox value="chat">/v1/chat/completions</a-checkbox>
+                  <a-checkbox value="responses">/v1/responses</a-checkbox>
+                  <a-checkbox value="messages">/v1/messages</a-checkbox>
+                </a-checkbox-group>
+              </a-form-item>
+            </a-col>
+          </a-row>
+          <a-row :gutter="16">
+            <a-col :span="12">
+              <a-form-item label="降级目标（未勾选透传时使用）">
+                <a-radio-group v-model="wizardForm.fallbackTarget">
+                  <a-radio value="Chat">Chat</a-radio>
+                  <a-radio value="Response">Response</a-radio>
+                  <a-radio value="Messages">Messages</a-radio>
+                </a-radio-group>
+              </a-form-item>
+            </a-col>
+            <a-col :span="12">
+              <a-form-item label="默认协议（旧版兼容）">
                 <a-radio-group v-model="wizardForm.protocolType">
                   <a-radio value="Chat">Chat</a-radio>
                   <a-radio value="Response">Response</a-radio>
@@ -542,7 +562,8 @@ const wizardSaving = ref(false)
 const editingChannelId = ref(null)
 const wizardForm = reactive({
   name: '', remark: '', supplierType: 'OpenAI', apiAddress: '',
-  timeoutSeconds: 30, cooldownSeconds: 60, protocolType: 'Chat', sseEnabled: true,
+  timeoutSeconds: 30, cooldownSeconds: 60, protocolType: 'Chat', fallbackTarget: 'Chat', sseEnabled: true,
+  _passthroughPathList: ['chat','responses','messages'],
   apiKeys: [], _availableModels: [], _supportsResponses: false, _supportedPathList: ['chat']
 })
 const keysTextarea = ref('')
@@ -688,8 +709,10 @@ async function editChannel(record) {
     cooldownSeconds: record.cooldownSeconds, protocolType: record.protocolType,
     sseEnabled: record.sseEnabled, _availableModels: preset?.defaultModels || [],
     _supportedPathList: (record.supportedPaths || 'chat').split(',').filter(Boolean),
+    _passthroughPathList: (record.passthroughPaths || record.supportedPaths || 'chat').split(',').filter(Boolean),
     _supportsResponses: (record.supportedPaths || '').includes('responses'),
     _supportsMessages: (record.supportedPaths || '').includes('messages'),
+    fallbackTarget: record.fallbackTarget || record.protocolType || 'Chat',
     apiKeys: []
   })
   keysTextarea.value = ''
