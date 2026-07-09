@@ -24,6 +24,10 @@
           <template #icon><icon-safe /></template>
           令牌管理
         </a-menu-item>
+        <a-menu-item key="imageForward">
+          <template #icon><icon-image /></template>
+          图片转发
+        </a-menu-item>
         <a-menu-item key="logs">
           <template #icon><icon-file /></template>
           日志查询
@@ -70,7 +74,7 @@ import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import {
   IconDashboard, IconApps, IconSafe, IconFile,
-  IconBookmark, IconSettings, IconExport, IconUser, IconBranch
+  IconBookmark, IconSettings, IconExport, IconUser, IconBranch, IconImage
 } from '@arco-design/web-vue/es/icon'
 
 const router = useRouter()
@@ -89,6 +93,7 @@ const menuKeyToRouteName = {
   channels: 'Channels',
   modelChains: 'ModelChains',
   tokens: 'Tokens',
+  imageForward: 'ImageForward',
   logs: 'Logs',
   billing: 'Billing',
   settings: 'Settings'

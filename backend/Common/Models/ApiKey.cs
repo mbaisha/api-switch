@@ -18,6 +18,10 @@ public class ApiKey
     [Column(StringLength = 1000)]
     public string KeyValue { get; set; } = string.Empty;
 
+    /// <summary>第二密钥(部分供应商需要双密钥，如讯飞星火的 apiSecret 用于 HMAC 签名)</summary>
+    [Column(StringLength = 1000)]
+    public string? KeyValue2 { get; set; }
+
     /// <summary>权重(负载均衡用)</summary>
     public int Weight { get; set; } = 1;
 

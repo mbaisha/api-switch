@@ -49,6 +49,10 @@ public class Channel
     [Column(StringLength = 20)]
     public string FallbackTarget { get; set; } = "Chat";
 
+    /// <summary>扩展配置(JSON): 部分供应商的专属参数，如讯飞星火的 appId</summary>
+    [Column(DbType = "text")]
+    public string? ExtConfig { get; set; }
+
     /// <summary>模型冷却时长(秒)</summary>
     public int CooldownSeconds { get; set; } = 60;
 

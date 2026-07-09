@@ -99,6 +99,7 @@
                   <a-checkbox value="chat">/v1/chat/completions</a-checkbox>
                   <a-checkbox value="responses">/v1/responses</a-checkbox>
                   <a-checkbox value="messages">/v1/messages</a-checkbox>
+                  <a-checkbox value="images">/v1/images/generations</a-checkbox>
                 </a-checkbox-group>
               </a-form-item>
             </a-col>
@@ -108,6 +109,7 @@
                   <a-checkbox value="chat">/v1/chat/completions</a-checkbox>
                   <a-checkbox value="responses">/v1/responses</a-checkbox>
                   <a-checkbox value="messages">/v1/messages</a-checkbox>
+                  <a-checkbox value="images">/v1/images/generations</a-checkbox>
                 </a-checkbox-group>
               </a-form-item>
             </a-col>
@@ -180,6 +182,19 @@
                 :rows="6"
               />
               <div class="batch-count">已识别 {{ parsedKeysCount }} 个密钥</div>
+
+              <!-- 讯飞专属：第二密钥(apiSecret) + appId -->
+              <template v-if="wizardForm.supplierType === 'Xfyun'">
+                <a-divider orientation="left" style="margin: 16px 0 8px">讯飞专属配置</a-divider>
+                <a-form-item label="第二密钥 (APISecret)" required style="margin-bottom: 12px">
+                  <a-input v-model="wizardForm._apiKey2" placeholder="讯飞 APISecret（用于 HMAC 签名）" allow-clear />
+                  <div class="form-hint">讯飞鉴权需 APIKey + APISecret 双密钥，此处填 APISecret。同一渠道下所有密钥共用此 APISecret。</div>
+                </a-form-item>
+                <a-form-item label="应用 ID (appId)" required style="margin-bottom: 12px">
+                  <a-input v-model="wizardForm._xfyunAppId" placeholder="讯飞开放平台 appId" allow-clear />
+                  <div class="form-hint">讯飞请求体的 header.app_id 字段需填此值。</div>
+                </a-form-item>
+              </template>
             </div>
           </a-tab-pane>
           <a-tab-pane key="models" title="模型映射">
@@ -442,11 +457,13 @@ const columns = [
 ]
 
 function getSupplierColor(type) {
-  const map = { OpenAI: '#10a37f', Azure: '#0078d4', Anthropic: '#d97757', Google: '#4285f4', DeepSeek: '#4d6bfe', Groq: '#f97316', Together: '#0f9', Custom: 'gray' }
+  const map = { OpenAI: '#10a37f', Azure: '#0078d4', Anthropic: '#d97757', Google: '#4285f4', DeepSeek: '#4d6bfe', Groq: '#f97316', Together: '#0f9', Custom: 'gray',
+    VolcEngine: '#ff5a00', SiliconFlow: '#6f42c1', Agnes: '#e91e63', ModelScope: '#0052cc', SenseNova: '#21a675', Xfyun: '#b34975', Gitee: '#c71d23', DashScope: '#ff6a00' }
   return map[type] || 'gray'
 }
 function getSupplierName(type) {
-  const map = { OpenAI: 'OpenAI', Azure: 'Azure', Anthropic: 'Claude', Google: 'Gemini', DeepSeek: 'DeepSeek', Groq: 'Groq', Together: 'Together', Custom: '自定义' }
+  const map = { OpenAI: 'OpenAI', Azure: 'Azure', Anthropic: 'Claude', Google: 'Gemini', DeepSeek: 'DeepSeek', Groq: 'Groq', Together: 'Together', Custom: '自定义',
+    VolcEngine: '豆包', SiliconFlow: '硅基', Agnes: 'Agnes', ModelScope: '魔搭', SenseNova: '商汤', Xfyun: '讯飞', Gitee: 'Gitee', DashScope: '百炼' }
   return map[type] || type
 }
 function getPreset(type) {
@@ -515,6 +532,14 @@ function getApiHint() {
     case 'DeepSeek': return `如填写 https://api.deepseek.com/v1，系统自动追加 /chat/completions`
     case 'Groq': return `如填写 https://api.groq.com/openai/v1，系统自动追加 /chat/completions`
     case 'Together': return `如填写 https://api.together.xyz/v1，系统自动追加 /chat/completions`
+    case 'VolcEngine': return '豆包/火山 Seedream，文生图与图生图共用 /images/generations，image 字段传参考图（最多10张）'
+    case 'SiliconFlow': return '硅基流动，size 自动映射为 image_size，多图自动拆为 image/image2/image3'
+    case 'Agnes': return 'Agnes-Ai，image 与 response_format 自动塞进 extra_body'
+    case 'ModelScope': return '魔搭，图生图用 images 字段（base64 数组），URL 参考图自动下载转 base64，走异步任务模式'
+    case 'SenseNova': return '商汤 U1，size 限白名单 11 个值，图生图自动包装为 chat/completions + modalities'
+    case 'Xfyun': return '讯飞星火，HMAC 签名鉴权（apiKey=appKey, 第二密钥=apiSecret），三段式请求体，HiDream 图生图走异步任务'
+    case 'Gitee': return 'Gitee AI，OpenAI 兼容，/images/generations + /images/edits'
+    case 'DashScope': return '阿里云百炼，通义万相，走 services/aigc 异步任务模式'
     case 'Custom': return 'OpenAI 兼容接口，系统自动追加 /chat/completions、/responses 或 /messages'
     default: return '系统将自动拼接正确的接口路径'
   }
@@ -556,7 +581,8 @@ const wizardForm = reactive({
   name: '', remark: '', supplierType: 'OpenAI', apiAddress: '',
   timeoutSeconds: 30, cooldownSeconds: 60, protocolType: 'Chat', fallbackTarget: 'Chat', sseEnabled: true,
   _passthroughPathList: ['chat','responses','messages'],
-  apiKeys: [], _availableModels: [], _supportsResponses: true, _supportedPathList: ['chat', 'responses', 'messages']
+  apiKeys: [], _availableModels: [], _supportsResponses: true, _supportedPathList: ['chat', 'responses', 'messages'],
+  _apiKey2: '', _xfyunAppId: '' // 讯飞专属：APISecret + appId
 })
 const keysTextarea = ref('')
 const modelBatchCustomId = ref('')
@@ -653,6 +679,11 @@ async function submitWizard() {
 
     const apiKeys = keysTextarea.value.split('\n').map(k => k.trim()).filter(Boolean)
 
+    // 讯飞专属：appId 存入 ExtConfig JSON，APISecret 透传给密钥的 KeyValue2
+    const extConfig = wizardForm.supplierType === 'Xfyun' && wizardForm._xfyunAppId
+      ? JSON.stringify({ appId: wizardForm._xfyunAppId }) : null
+    const apiKey2 = wizardForm.supplierType === 'Xfyun' ? wizardForm._apiKey2 : null
+
     if (editingChannelId.value) {
       const existingChannel = channels.value.find(ch => ch.id === editingChannelId.value);
       await channelApi.update(editingChannelId.value, {
@@ -662,12 +693,10 @@ async function submitWizard() {
         timeoutSeconds: wizardForm.timeoutSeconds, cooldownSeconds: wizardForm.cooldownSeconds,
         protocolType: wizardForm.protocolType, sseEnabled: wizardForm.sseEnabled,
         supportedPaths, passthroughPaths: (wizardForm._passthroughPathList || []).join(','),
-        fallbackTarget: wizardForm.fallbackTarget, enabled: existingChannel?.enabled ?? true
+        fallbackTarget: wizardForm.fallbackTarget, enabled: existingChannel?.enabled ?? true,
+        extConfig,
+        apiKeys: apiKeys.length > 0 ? apiKeys.map(k => ({ keyValue: k, keyValue2: apiKey2, weight: 1, status: 1 })) : null
       })
-      // 编辑时也保存密钥（如果有新输入的）
-      if (apiKeys.length > 0) {
-        await channelApi.batchAddKeys(editingChannelId.value, apiKeys)
-      }
       // 编辑时也保存模型（如果有新添加的）
       if (allModels.length > 0) {
         await channelApi.batchAddModels(editingChannelId.value, allModels)
@@ -681,7 +710,8 @@ async function submitWizard() {
         protocolType: wizardForm.protocolType, supportedPaths,
         passthroughPaths: (wizardForm._passthroughPathList || []).join(','),
         fallbackTarget: wizardForm.fallbackTarget,
-        sseEnabled: wizardForm.sseEnabled, apiKeys, models: allModels
+        sseEnabled: wizardForm.sseEnabled, extConfig,
+        apiKeys, apiKey2, models: allModels
       }
       const res = await channelApi.create(payload)
       if (res.code === 200) Message.success('渠道创建成功！')
@@ -699,6 +729,20 @@ async function editChannel(record) {
   wizardVisible.value = true
   wizardStep.value = 0  // 编辑模式从 step 0 开始，step 0 即"配置参数"
   const preset = supplierPresets.value.find(p => p.type === record.supplierType)
+
+  // 回填讯飞专属：从 extConfig JSON 解 appId，从已有密钥取 apiKey2
+  let xfyunAppId = ''
+  let apiKey2 = ''
+  try {
+    if (record.extConfig) {
+      const ec = JSON.parse(record.extConfig)
+      xfyunAppId = ec.appId || ''
+    }
+  } catch { /* ignore */ }
+  try {
+    if (record._existingKeys?.length > 0) apiKey2 = record._existingKeys[0].keyValue2 || ''
+  } catch { /* ignore */ }
+
   Object.assign(wizardForm, {
     name: record.name, remark: record.remark || '', supplierType: record.supplierType,
     apiAddress: record.apiAddress, timeoutSeconds: record.timeoutSeconds,
@@ -709,7 +753,8 @@ async function editChannel(record) {
     _supportsResponses: (record.supportedPaths || '').includes('responses'),
     _supportsMessages: (record.supportedPaths || '').includes('messages'),
     fallbackTarget: record.fallbackTarget || record.protocolType || 'Chat',
-    apiKeys: []
+    apiKeys: [],
+    _xfyunAppId: xfyunAppId, _apiKey2: apiKey2
   })
   keysTextarea.value = ''
   selectedPresetModels.value = []

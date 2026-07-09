@@ -70,7 +70,7 @@ public class ForwardEngine
         }
 
         // 3. 获取所有节点
-        var allNodes = await _channelService.GetNodesByCustomModelId(customModelId);
+        var allNodes = await _channelService.GetNodesByCustomModelId(customModelId, "Text");
         if (allNodes.Count == 0)
         {
             var fallbackMsg = "未配置任何可用渠道";
@@ -297,7 +297,7 @@ public class ForwardEngine
         }
 
         // 3. 获取所有节点，带重试的轮询连接（与普通转发相同策略）
-        var allSseNodes = await _channelService.GetNodesByCustomModelId(customModelId);
+        var allSseNodes = await _channelService.GetNodesByCustomModelId(customModelId, "Text");
         if (allSseNodes.Count == 0)
         {
             context.Response.StatusCode = 503;

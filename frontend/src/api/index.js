@@ -75,7 +75,9 @@ export const logApi = {
 
 // 看板
 export const dashboardApi = {
-  get: () => http.get('/admin/dashboard')
+  get: () => http.get('/admin/dashboard'),
+  upstreamKeys: () => http.get('/admin/dashboard/upstream-keys'),
+  modelUsage: () => http.get('/admin/dashboard/model-usage')
 }
 
 // 认证

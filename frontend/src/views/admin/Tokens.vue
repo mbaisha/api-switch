@@ -42,6 +42,11 @@
           </span>
           <a-tag v-else size="small" color="green">不限流</a-tag>
         </template>
+        <template #imageEnabled="{ record }">
+          <a-tag :color="record.imageEnabled ? 'arcoblue' : 'gray'" size="small">
+            {{ record.imageEnabled ? '已开通' : '未开通' }}
+          </a-tag>
+        </template>
         <template #action="{ record }">
           <a-space>
             <a-button size="small" type="text" @click="editToken(record)">编辑</a-button>
@@ -108,6 +113,16 @@
             <template #checked>启用</template>
             <template #unchecked>禁用</template>
           </a-switch>
+        </a-form-item>
+        <a-divider style="margin: 8px 0">图片转发权限</a-divider>
+        <a-form-item label="允许调用图片转发接口">
+          <a-switch v-model="form.imageEnabled">
+            <template #checked>已开通</template>
+            <template #unchecked>未开通</template>
+          </a-switch>
+          <div style="font-size:12px;color:var(--color-text-3);margin-top:2px">
+            开通后此令牌可调用 /v1/images/generations（文生图/图生图/多图）。与 LLM 权限独立管控，默认关闭。
+          </div>
         </a-form-item>
       </a-form>
     </a-modal>
@@ -220,6 +235,7 @@ const columns = [
   { title: '余额', slotName: 'balance', width: 100 },
   { title: '限流', slotName: 'rateLimit', width: 120 },
   { title: '调用次数', dataIndex: 'totalCalls', width: 90 },
+  { title: '图片权限', slotName: 'imageEnabled', width: 90 },
   { title: '状态', slotName: 'enabled', width: 80 },
   { title: '操作', slotName: 'action', width: 220, fixed: 'right' }
 ]

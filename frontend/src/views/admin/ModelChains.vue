@@ -26,6 +26,7 @@
             <a-tag v-if="chain.displayName && chain.displayName !== chain.customModelId" color="arcoblue" size="small">
               {{ chain.displayName }}
             </a-tag>
+            <a-tag size="small" :color="getChainTypeColor(chain)">{{ getChainTypeLabel(chain) }}</a-tag>
             <a-tag size="small" color="arcoblue">{{ chain.nodes.length }} 个节点</a-tag>
             <a-tag size="small" :color="getEnabledCount(chain) > 0 ? 'green' : 'red'">
               {{ getEnabledCount(chain) }} 个启用
@@ -106,6 +107,13 @@
           </a-form-item>
           <a-form-item label="显示名称">
             <a-input v-model="wizardForm.displayName" placeholder="如: GPT-4 多源负载池" />
+          </a-form-item>
+          <a-form-item label="链类型" required>
+            <a-radio-group v-model="wizardForm.chainType">
+              <a-radio value="Text">文本 LLM（/v1/chat/completions）</a-radio>
+              <a-radio value="Image">图片转发（/v1/images/generations）</a-radio>
+            </a-radio-group>
+            <div class="form-hint">文本链只参与 LLM 转发，图片链只参与图片转发，同 ID 可同时建两条互不串味</div>
           </a-form-item>
           <a-form-item label="描述">
             <a-textarea v-model="wizardForm.description" placeholder="可选: 链用途说明" :rows="2" />
@@ -332,6 +340,15 @@ function getSupplierName(type) {
 function getChannelName(id) {
   return channels.value.find(c => c.id === id)?.name || '未知'
 }
+function getChainTypeColor(chain) {
+  // 同一 customModelId 下所有节点链类型一致，取第一个节点判断
+  const t = chain.nodes?.[0]?.chainType || 'Text'
+  return t === 'Image' ? 'orangered' : 'arcoblue'
+}
+function getChainTypeLabel(chain) {
+  const t = chain.nodes?.[0]?.chainType || 'Text'
+  return t === 'Image' ? '图片' : '文本'
+}
 function getChannelModels(channelId) {
   return channelModelsMap.value[channelId] || []
 }
@@ -394,7 +411,8 @@ const wizardSaving = ref(false)
 const wizardForm = reactive({
   customModelId: '',
   displayName: '',
-  description: ''
+  description: '',
+  chainType: 'Text'
 })
 const wizardNodes = ref([])
 
@@ -416,7 +434,7 @@ const chainWizardSteps = computed(() => {
 function showCreateWizard() {
   wizardStep.value = 0
   wizardVisible.value = true
-  Object.assign(wizardForm, { customModelId: '', displayName: '', description: '' })
+  Object.assign(wizardForm, { customModelId: '', displayName: '', description: '', chainType: 'Text' })
   wizardNodes.value = []
 }
 
@@ -483,6 +501,7 @@ async function submitChain() {
       await channelApi.createChain({
         customModelId: wizardForm.customModelId,
         displayName: wizardForm.displayName || null,
+        chainType: wizardForm.chainType,
         channelId: node.channelId,
         originalModelId: node.originalModelId,
         weight: node.weight,

@@ -36,9 +36,9 @@ public class ChannelService
     /// 优先使用模型链（ModelChain），其次使用渠道模型映射（ChannelModel）
     /// 结果缓存 30 秒，大幅减少重复查询
     /// </summary>
-    public async Task<List<LoadBalanceNode>> GetNodesByCustomModelId(string customModelId)
+    public async Task<List<LoadBalanceNode>> GetNodesByCustomModelId(string customModelId, string chainType = "Text")
     {
-        var cacheKey = $"nodes:{customModelId}";
+        var cacheKey = $"nodes:{chainType.ToLower()}:{customModelId}";
 
         // 1. 尝试从缓存获取
         var cached = await _cache.GetAsync<List<LoadBalanceNode>>(cacheKey);
@@ -46,7 +46,7 @@ public class ChannelService
             return cached;
 
         // 2. 缓存未命中，执行完整查询
-        var nodes = await BuildNodesAsync(customModelId);
+        var nodes = await BuildNodesAsync(customModelId, chainType);
 
         // 3. 写入缓存
         if (nodes.Count > 0)
@@ -58,13 +58,14 @@ public class ChannelService
     /// <summary>
     /// 构建节点列表（实际查询逻辑）
     /// </summary>
-    private async Task<List<LoadBalanceNode>> BuildNodesAsync(string customModelId)
+    private async Task<List<LoadBalanceNode>> BuildNodesAsync(string customModelId, string chainType)
     {
         var nodes = new List<LoadBalanceNode>();
 
-        // 1. 先查模型链
+        // 1. 先查模型链（按 ChainType 过滤，文本只取 Text 链，图片只取 Image 链；兼容旧数据空值）
         var chains = await _chainRepo.GetListAsync(c =>
-            c.CustomModelId == customModelId && c.Enabled);
+            c.CustomModelId == customModelId && c.Enabled &&
+            (c.ChainType == chainType || string.IsNullOrEmpty(c.ChainType)));
         if (chains.Count > 0)
         {
             foreach (var chain in chains.OrderBy(c => c.Priority))
@@ -84,7 +85,9 @@ public class ChannelService
                         SupplierType = channel.SupplierType,
                         ApiAddress = channel.ApiAddress,
                         ApiKey = key.KeyValue,
+                        ApiKey2 = key.KeyValue2,
                         ApiKeyId = key.Id,
+                        ExtConfig = channel.ExtConfig,
                         ProtocolType = channel.ProtocolType,
                         PassthroughPaths = channel.PassthroughPaths ?? channel.SupportedPaths ?? "chat",
                         SupportedPaths = channel.SupportedPaths ?? "chat",
@@ -124,7 +127,9 @@ public class ChannelService
                         SupplierType = channel.SupplierType,
                         ApiAddress = channel.ApiAddress,
                         ApiKey = key.KeyValue,
+                        ApiKey2 = key.KeyValue2,
                         ApiKeyId = key.Id,
+                        ExtConfig = channel.ExtConfig,
                         ProtocolType = channel.ProtocolType,
                         PassthroughPaths = channel.PassthroughPaths ?? channel.SupportedPaths ?? "chat",
                         SupportedPaths = channel.SupportedPaths ?? "chat",
@@ -162,7 +167,11 @@ public class LoadBalanceNode
     public string SupplierType { get; set; } = string.Empty;
     public string ApiAddress { get; set; } = string.Empty;
     public string ApiKey { get; set; } = string.Empty;
+    /// <summary>第二密钥(讯飞 apiSecret 等)</summary>
+    public string? ApiKey2 { get; set; }
     public long ApiKeyId { get; set; }
+    /// <summary>渠道扩展配置(讯飞 appId 等)</summary>
+    public string? ExtConfig { get; set; }
     public string ProtocolType { get; set; } = "Chat";
     /// <summary>支持的接口路径（逗号分隔: chat,responses,messages）</summary>
     public string SupportedPaths { get; set; } = "chat";

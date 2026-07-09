@@ -33,6 +33,12 @@ const routes = [
         meta: { title: '令牌管理', requiresAuth: true }
       },
       {
+        path: 'image-forward',
+        name: 'ImageForward',
+        component: () => import('../views/image/ImageForward.vue'),
+        meta: { title: '图片转发', requiresAuth: true }
+      },
+      {
         path: 'logs',
         name: 'Logs',
         component: () => import('../views/admin/Logs.vue'),

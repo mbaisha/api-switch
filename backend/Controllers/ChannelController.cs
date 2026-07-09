@@ -69,6 +69,7 @@ public class ChannelController : ControllerBase
             PassthroughPaths = request.PassthroughPaths ?? request.SupportedPaths,
             FallbackTarget = request.FallbackTarget ?? request.ProtocolType,
             CooldownSeconds = request.CooldownSeconds,
+            ExtConfig = request.ExtConfig, // 透传扩展配置（讯飞 appId 等）
             Enabled = true,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
@@ -82,6 +83,7 @@ public class ChannelController : ControllerBase
             {
                 ChannelId = channel.Id,
                 KeyValue = k,
+                KeyValue2 = request.ApiKey2, // 透传第二密钥（讯飞 APISecret 等，同一渠道共用）
                 Weight = 1,
                 Status = 1,
                 CreatedAt = DateTime.UtcNow
@@ -125,6 +127,7 @@ public class ChannelController : ControllerBase
         existing.SupportedPaths = channel.SupportedPaths;
         existing.FallbackTarget = channel.FallbackTarget ?? channel.ProtocolType;
         existing.CooldownSeconds = channel.CooldownSeconds;
+        existing.ExtConfig = channel.ExtConfig; // 透传扩展配置（讯飞 appId 等）
         existing.Enabled = channel.Enabled;
         existing.UpdatedAt = DateTime.UtcNow;
 
@@ -140,6 +143,7 @@ public class ChannelController : ControllerBase
                 {
                     ChannelId = id,
                     KeyValue = k.KeyValue,
+                    KeyValue2 = k.KeyValue2, // 透传第二密钥（讯飞 apiSecret 等）
                     Weight = k.Weight > 0 ? k.Weight : 1,
                     Status = k.Status,
                     CreatedAt = DateTime.UtcNow
@@ -416,6 +420,7 @@ public class ChannelController : ControllerBase
         existing.Weight = chain.Weight;
         existing.Priority = chain.Priority;
         existing.Enabled = chain.Enabled;
+        existing.ChainType = string.IsNullOrEmpty(chain.ChainType) ? existing.ChainType : chain.ChainType;
         existing.UpdatedAt = DateTime.UtcNow;
         await _chainRepo.UpdateAsync(existing);
         return ApiResult<string>.Success("ok", "更新成功");
@@ -490,6 +495,63 @@ public class ChannelController : ControllerBase
                 SupportedPaths = ["chat", "responses"],
                 IsOpenAIProtocol = true,
                 DefaultModels = []
+            },
+            // ===== 图片生成供应商（下游统一 /v1/images/generations，image 字段扩展支持图生图/多图） =====
+            new() {
+                Type = "VolcEngine", Name = "火山引擎/豆包 Seedream",
+                DefaultApi = "https://ark.cn-beijing.volces.com/api/v3",
+                SupportedPaths = ["images"],
+                IsOpenAIProtocol = true,
+                DefaultModels = ["doubao-seedream-4-0-250828", "doubao-seedream-4-5-251128", "doubao-seedream-5-0-260128"]
+            },
+            new() {
+                Type = "SiliconFlow", Name = "硅基流动",
+                DefaultApi = "https://api.siliconflow.cn/v1",
+                SupportedPaths = ["images"],
+                IsOpenAIProtocol = true,
+                DefaultModels = ["Kwai-Kolors/Kolors", "Qwen/Qwen-Image", "Qwen/Qwen-Image-Edit-2509", "Tongyi-MAI/Z-Image-Turbo", "blackforest-labs/FLUX.1-dev"]
+            },
+            new() {
+                Type = "Agnes", Name = "Agnes-Ai",
+                DefaultApi = "https://apihub.agnes-ai.com/v1",
+                SupportedPaths = ["images"],
+                IsOpenAIProtocol = true,
+                DefaultModels = ["agnes-image-2.0-flash", "agnes-image-2.1-flash"]
+            },
+            new() {
+                Type = "ModelScope", Name = "魔搭 ModelScope",
+                DefaultApi = "https://api-inference.modelscope.cn/v1",
+                SupportedPaths = ["images"],
+                IsOpenAIProtocol = true,
+                DefaultModels = ["Tongyi-MAI/Z-Image-Turbo", "Qwen/Qwen-Image", "Qwen/Qwen-Image-Edit-2509", "kolors"]
+            },
+            new() {
+                Type = "SenseNova", Name = "商汤 SenseNova U1",
+                DefaultApi = "https://api.sensenova.cn/v1",
+                SupportedPaths = ["images"],
+                IsOpenAIProtocol = true,
+                DefaultModels = ["sensenova-u1-fast"]
+            },
+            new() {
+                Type = "Xfyun", Name = "讯飞星火",
+                DefaultApi = "https://spark-api.cn-huabei-1.xf-yun.com",
+                SupportedPaths = ["images"],
+                IsOpenAIProtocol = false,
+                DefaultModels = ["tti", "HiDream"]
+            },
+            new() {
+                Type = "Gitee", Name = "Gitee AI",
+                DefaultApi = "https://ai.gitee.com/api/serverless",
+                SupportedPaths = ["images"],
+                IsOpenAIProtocol = true,
+                DefaultModels = ["FLUX.1-dev", "FLUX.1-schnell", "Kolors"]
+            },
+            new() {
+                Type = "DashScope", Name = "阿里云百炼 DashScope",
+                DefaultApi = "https://dashscope.aliyuncs.com/api/v1",
+                SupportedPaths = ["images"],
+                IsOpenAIProtocol = false,
+                DefaultModels = ["wanx2.1-t2i-turbo", "wanx2.1-t2i-plus", "wanx2.1-i2i-turbo"]
             }
         };
         return ApiResult<List<SupplierPreset>>.Success(presets);
@@ -546,7 +608,11 @@ public class CreateChannelRequest
     public string? PassthroughPaths { get; set; }
     public string? FallbackTarget { get; set; }
     public int CooldownSeconds { get; set; } = 60;
+    /// <summary>扩展配置(JSON): 讯飞 appId 等供应商专属参数</summary>
+    public string? ExtConfig { get; set; }
     public List<string>? ApiKeys { get; set; }
+    /// <summary>第二密钥（讯飞 APISecret 等，同一渠道共用）</summary>
+    public string? ApiKey2 { get; set; }
     public List<ModelEntry>? Models { get; set; }
 }
 

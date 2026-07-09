@@ -49,6 +49,9 @@ public class Token
     /// <summary>窗口内每个IP最大请求数(0=不限流)</summary>
     public int RateLimitCount { get; set; } = 60;
 
+    /// <summary>是否允许调用图片转发接口(/v1/images/generations)，默认关闭。LLM 与图片转发权限独立管控</summary>
+    public bool ImageEnabled { get; set; } = false;
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
