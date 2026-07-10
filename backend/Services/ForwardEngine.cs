@@ -548,6 +548,10 @@ public class ForwardEngine
             // 记录是否已从 usage chunk 中提取到准确 token 数
             bool usageFound = false;
             int usageInputTokens = 0, usageOutputTokens = 0;
+            // Anthropic 流式专属：input_tokens 在 message_start 里一次性给出，output_tokens 在每个 message_delta 里给增量需累计
+            bool anthropicInputCaptured = false;
+            int anthropicOutputAccumulated = 0;
+            bool anthropicStream = false;
 
             while ((line = await successReader.ReadLineAsync()) != null)
             {
@@ -555,8 +559,32 @@ public class ForwardEngine
                 await context.Response.WriteAsync(line + "\n");
                 await context.Response.Body.FlushAsync();
 
-                // 尝试检测 usage chunk（OpenAI stream_options: {"include_usage": true}）
-                if (!usageFound && TokenEstimator.TryExtractStreamUsage(line, out var ui, out var uo))
+                // 嗅探是否为 Anthropic 流式（出现 event: 行即认定）
+                if (!anthropicStream && line.StartsWith("event: "))
+                    anthropicStream = true;
+
+                // Anthropic 流式专属路径：message_start 给 input_tokens（一次性），message_delta 给 output_tokens 增量（累计）
+                // 必须先于 OpenAI 分支判断，否则 message_delta 会被通用 TryExtractStreamUsage 当成 OpenAI usage 吃掉
+                if (anthropicStream)
+                {
+                    if (!anthropicInputCaptured &&
+                        TokenEstimator.TryExtractAnthropicMessageStartUsage(line, out var antInput))
+                    {
+                        usageInputTokens = antInput;
+                        anthropicInputCaptured = true;
+                        continue;
+                    }
+                    if (TokenEstimator.TryExtractStreamUsage(line, out var _, out var antOutInc))
+                    {
+                        anthropicOutputAccumulated += antOutInc;
+                        usageFound = true;
+                        continue;
+                    }
+                }
+
+                // OpenAI 范式 usage chunk（stream_options.include_usage）
+                if (!usageFound && !anthropicStream &&
+                    TokenEstimator.TryExtractStreamUsage(line, out var ui, out var uo))
                 {
                     usageInputTokens = ui;
                     usageOutputTokens = uo;
@@ -572,6 +600,8 @@ public class ForwardEngine
                         var jsonPayload = line[6..];
                         using var doc = JsonDocument.Parse(jsonPayload);
                         var root = doc.RootElement;
+
+                        // OpenAI 范式：choices[0].delta.content
                         if (root.TryGetProperty("choices", out var choices) && choices.ValueKind == JsonValueKind.Array)
                         {
                             foreach (var choice in choices.EnumerateArray())
@@ -583,6 +613,13 @@ public class ForwardEngine
                                 }
                             }
                         }
+                        // Anthropic 范式：content_block_delta → delta.text
+                        else if (root.TryGetProperty("type", out var evtType) && evtType.GetString() == "content_block_delta" &&
+                                 root.TryGetProperty("delta", out var delta2) &&
+                                 delta2.TryGetProperty("text", out var text2) && text2.ValueKind == JsonValueKind.String)
+                        {
+                            streamOutputContent.Append(text2.GetString());
+                        }
                     }
                     catch { /* SSE 解析失败，跳过该行的 Token 统计 */ }
                 }
@@ -592,17 +629,18 @@ public class ForwardEngine
             int finalInputTokens, finalOutputTokens;
             if (usageFound)
             {
-                finalInputTokens = usageInputTokens;
-                finalOutputTokens = usageOutputTokens;
-                _logger.LogInformation("SSE Token 统计（来自上游 usage）：Input={In} Output={Out}",
-                    finalInputTokens, finalOutputTokens);
+                finalInputTokens = usageInputTokens > 0 ? usageInputTokens : streamInputTokens;
+                finalOutputTokens = usageOutputTokens > 0 ? usageOutputTokens :
+                                     (anthropicStream ? anthropicOutputAccumulated : 0);
+                _logger.LogInformation("SSE Token 统计（来自上游 usage）：Input={In} Output={Out} Anthropic={Ant}",
+                    finalInputTokens, finalOutputTokens, anthropicStream);
             }
             else
             {
                 finalInputTokens = streamInputTokens;
                 finalOutputTokens = TokenEstimator.EstimateOutputTokens(streamOutputContent.ToString());
-                _logger.LogInformation("SSE Token 统计（估算）：Input={In} Output={Out}",
-                    finalInputTokens, finalOutputTokens);
+                _logger.LogInformation("SSE Token 统计（估算）：Input={In} Output={Out} Anthropic={Ant}",
+                    finalInputTokens, finalOutputTokens, anthropicStream);
             }
 
             var logId = await LogCall(tokenValue, customModelId, usedNode.ChannelName, usedNode.OriginalModelId, "Success",

@@ -27,6 +27,7 @@ public class ImageForwardEngine
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ChannelService _channelService;
     private readonly TokenService _tokenService;
+    private readonly IFreeSql _db;
     private readonly BaseRepository<CallLog> _callLogRepo;
     private readonly BaseRepository<ApiKey> _apiKeyRepo;
     private readonly BaseRepository<CallImage> _callImageRepo;
@@ -55,6 +56,7 @@ public class ImageForwardEngine
         _channelService = channelService;
         _tokenService = tokenService;
         _billingService = billingService;
+        _db = db;
         _callLogRepo = new BaseRepository<CallLog>(db);
         _apiKeyRepo = new BaseRepository<ApiKey>(db);
         _callImageRepo = new BaseRepository<CallImage>(db);
@@ -228,6 +230,76 @@ public class ImageForwardEngine
         var failMsg = lastEx != null ? $"所有渠道均不可用: {lastEx.Message}" : $"所有渠道均不可用: {lastErrorMsg}";
         _logger.LogError("图片转发失败，已耗尽 {MaxAttempts} 次重试: {Msg}", maxAttempts, failMsg);
         return (JsonSerializer.Serialize(new { error = new { message = "服务暂时不可用，请稍后重试" } }), lastStatusCode, failMsg);
+    }
+
+    /// <summary>
+    /// 上游接口直测（管理端用）：绕开令牌/模型权限/计费/日志，直接用指定渠道的密钥
+    /// 与原始模型ID打一次上游图片接口，验证对接是否可用。返回响应原文与延迟。
+    /// </summary>
+    public async Task<(string UpstreamUrl, string RequestBody, int StatusCode, string ResponseBody, long LatencyMs, string? Error)> TestUpstreamImageAsync(
+        long channelId, string originalModelId, string testPrompt, string? testSize, string? testResponseFormat, string? testImage)
+    {
+        var channelRepo = new BaseRepository<Channel>(_db);
+        var channel = await channelRepo.GetByIdAsync(channelId);
+        if (channel == null)
+            return ("", "", 0, "", 0, "渠道不存在");
+
+        var keys = await _apiKeyRepo.GetListAsync(k => k.ChannelId == channelId && k.Status == 1);
+        if (keys.Count == 0)
+            return ("", "", 0, "", 0, "无可用密钥");
+        var key = keys[0];
+
+        // 构造下游统一体（与 ForwardImageAsync 入参一致），让 BuildUpstreamRequest 走真实适配
+        var downstreamBody = BuildTestDownstreamBody(originalModelId, testPrompt, testSize, testResponseFormat, testImage);
+        var node = new LoadBalanceNode
+        {
+            ChannelId = channel.Id,
+            ChannelName = channel.Name,
+            SupplierType = channel.SupplierType,
+            ApiAddress = channel.ApiAddress,
+            ApiKey = key.KeyValue,
+            ApiKey2 = key.KeyValue2,
+            ExtConfig = channel.ExtConfig,
+            TimeoutSeconds = channel.TimeoutSeconds,
+            OriginalModelId = originalModelId
+        };
+
+        var startTime = DateTime.UtcNow;
+        try
+        {
+            var upstreamReq = await BuildUpstreamRequest(downstreamBody, node);
+            var client = _httpClientFactory.CreateClient("AIClient");
+            client.Timeout = TimeSpan.FromSeconds(Math.Max(node.TimeoutSeconds, 120));
+
+            var httpRequest = new HttpRequestMessage(HttpMethod.Post, upstreamReq.Url)
+            {
+                Content = new StringContent(upstreamReq.Body, Encoding.UTF8, "application/json")
+            };
+            SetAuthHeaders(httpRequest, node.SupplierType, node.ApiKey, node.ApiKey2);
+            if (upstreamReq.ExtraHeaders != null)
+                foreach (var pair in upstreamReq.ExtraHeaders)
+                    httpRequest.Headers.TryAddWithoutValidation(pair.Key, pair.Value);
+
+            var response = await client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead);
+            var responseBody = await response.Content.ReadAsStringAsync();
+            var latency = (long)(DateTime.UtcNow - startTime).TotalMilliseconds;
+
+            return (upstreamReq.Url, upstreamReq.Body, (int)response.StatusCode, responseBody, latency, null);
+        }
+        catch (Exception ex)
+        {
+            var latency = (long)(DateTime.UtcNow - startTime).TotalMilliseconds;
+            return ("", "", 0, "", latency, ex.Message);
+        }
+    }
+
+    private static string BuildTestDownstreamBody(string modelId, string prompt, string? size, string? responseFormat, string? image)
+    {
+        var dict = new Dictionary<string, object?> { ["model"] = modelId, ["prompt"] = prompt };
+        if (!string.IsNullOrEmpty(size)) dict["size"] = size;
+        if (!string.IsNullOrEmpty(responseFormat)) dict["response_format"] = responseFormat;
+        if (!string.IsNullOrEmpty(image)) dict["image"] = image;
+        return JsonSerializer.Serialize(dict);
     }
 
     // ============== 上游请求构建（含全部适配分支） ==============
@@ -446,7 +518,12 @@ public class ImageForwardEngine
                     }
 
                     // header.uid 可空，不写死；parameter.chat 字段对齐官方文档
-                    var headerDict = new Dictionary<string, object?> { ["app_id"] = appId };
+                    // patch_id 必填（星辰 MaaS schema 校验强制；非微调模型传空数组即可）
+                    var headerDict = new Dictionary<string, object?>
+                    {
+                        ["app_id"] = appId,
+                        ["patch_id"] = Array.Empty<string>()
+                    };
                     var chatDict = new Dictionary<string, object?>
                     {
                         ["domain"] = node.OriginalModelId,
@@ -476,15 +553,22 @@ public class ImageForwardEngine
                     if (images.Count > 0)
                     {
                         var finalBody = await PollXfyunHiDreamAsync(baseUri, node, images, prompt, appId);
-                        return ($"{baseUri}/v2.1/tti", finalBody, null);
+                        var imgPath = "/v2.1/tti";
+                        // apiAddress 可能已含完整路径，避免重复拼接成 /v2.1/tti/v2.1/tti
+                        var imgFullUrl = baseUri.Contains(imgPath, StringComparison.OrdinalIgnoreCase) ? baseUri : $"{baseUri}{imgPath}";
+                        return (imgFullUrl, finalBody, null);
                     }
-                    // 讯飞 HMAC 签名鉴权：apiKey=APIKey, apiKey2=APISecret
-                    // 签名串: host\ndate\nPOST /v2.1/tti HTTP/1.1，HMAC-SHA256(apiSecret) → base64
-                    // authorization_origin: api_key="...",algorithm="hmac-sha256",headers="host date request-line",signature="..."
-                    // 最终 Authorization = base64(authorization_origin)，同时带 Date 头
+                    // 讯飞星辰 MaaS 鉴权：Authorization: Bearer ${APIKey}:${APISecret}
+                    // 实测 maas-api.cn-huabei-1.xf-yun.com 的 HMAC 网关拒收星火签名串（enforced header 'date' not used），
+                    // 但同端点走 OpenAILike 鉴权（Bearer apikey:apisecret）可通过。Bearer 路线不用 HMAC 签名、不要求 Date 头。
                     var xfPath = "/v2.1/tti";
-                    var xfHeaders = BuildXfyunAuthHeaders(baseUri, xfPath, node.ApiKey, node.ApiKey2);
-                    return ($"{baseUri}{xfPath}", bodyStr, xfHeaders);
+                    var fullUrl = baseUri.Contains(xfPath, StringComparison.OrdinalIgnoreCase) ? baseUri : $"{baseUri}{xfPath}";
+                    var bearerToken = $"{node.ApiKey}:{node.ApiKey2}";
+                    var xfHeaders = new List<(string, string)>
+                    {
+                        ("Authorization", $"Bearer {bearerToken}")
+                    };
+                    return (fullUrl, bodyStr, xfHeaders);
                 }
 
             default:
@@ -625,8 +709,8 @@ public class ImageForwardEngine
             }
         });
 
-        // 2. 鉴权签名（建任务端点）
-        var createHeaders = BuildXfyunAuthHeaders(baseUri, createPath, node.ApiKey, node.ApiKey2);
+        // 2. 鉴权（建任务端点）：星辰 MaaS 走 Bearer apikey:apisecret，不用 HMAC 签名
+        var createHeaders = BuildXfyunBearerHeaders(node.ApiKey, node.ApiKey2);
         var createReq = new HttpRequestMessage(HttpMethod.Post, $"{baseUri}{createPath}")
         {
             Content = new StringContent(createBody, Encoding.UTF8, "application/json")
@@ -653,7 +737,7 @@ public class ImageForwardEngine
         // 4. 轮询查询任务状态（最多约 5 分钟）
         var queryPath = "/v1/private/s3fd61810/query";
         var queryBody = JsonSerializer.Serialize(new { header = new { app_id = appId, task_id = taskId } });
-        var queryHeaders = BuildXfyunAuthHeaders(baseUri, queryPath, node.ApiKey, node.ApiKey2);
+        var queryHeaders = BuildXfyunBearerHeaders(node.ApiKey, node.ApiKey2);
 
         for (int i = 0; i < 60; i++)
         {
@@ -799,7 +883,11 @@ public class ImageForwardEngine
             case "Azure":
                 request.Headers.TryAddWithoutValidation("api-key", apiKey);
                 break;
-            // 讯飞鉴权在 BuildUpstreamRequest 内通过 ExtraHeaders 完整签名后传入，此处不重复处理
+            // 讯飞鉴权在 BuildUpstreamRequest 内通过 ExtraHeaders 完整构造（Bearer apikey:apisecret）后传入，
+            // 此处不重复处理——若在此先设 Authorization，extraHeaders 的 TryAddWithoutValidation 会因头已存在而静默失败，
+            // 导致发出去的是缺 apisecret 的错头。
+            case "Xfyun":
+                break;
             default:
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
                 break;
@@ -807,43 +895,18 @@ public class ImageForwardEngine
     }
 
     /// <summary>
-    /// 讯飞 HMAC-SHA256 签名鉴权（对齐官方规范）：
-    /// 1. date = RFC1123 UTC 时间
-    /// 2. signature_origin = "host: {host}\ndate: {date}\nPOST {path} HTTP/1.1"
-    /// 3. signature = base64(HMACSHA256(apiSecret, signature_origin))
-    /// 4. authorization_origin = api_key="...",algorithm="hmac-sha256",headers="host date request-line",signature="..."
-    /// 5. Authorization = base64(authorization_origin)，同时返回 Date 头
+    /// 讯飞星辰 MaaS OpenAILike 鉴权（对齐 docs.iflyaicloud.com/doc/227 规范）：
+    /// Authorization: Bearer ${api_key}:${api_secret} —— 不用 HMAC 签名、不要求 Date 头。
+    /// 实测 maas-api.cn-huabei-1.xf-yun.com 的 HMAC 网关拒收星火签名串
+    /// （"enforced header 'date' not used for signature creation"），同端点走 Bearer 鉴权可通过。
     /// </summary>
-    private static List<(string Key, string Value)>? BuildXfyunAuthHeaders(string baseUri, string path, string apiKey, string? apiSecret)
+    private static List<(string Key, string Value)>? BuildXfyunBearerHeaders(string apiKey, string? apiSecret)
     {
         if (string.IsNullOrEmpty(apiKey) || string.IsNullOrEmpty(apiSecret))
             return null;
-
-        // 从 baseUri 提取 host（去掉协议）
-        var host = baseUri;
-        if (host.StartsWith("https://")) host = host["https://".Length..];
-        else if (host.StartsWith("http://")) host = host["http://".Length..];
-        host = host.Split('/')[0];
-
-        var date = DateTime.UtcNow.ToString("R"); // RFC1123 格式
-
-        // signature_origin
-        var signatureOrigin = $"host: {host}\ndate: {date}\nPOST {path} HTTP/1.1";
-
-        // HMAC-SHA256 签名
-        using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(apiSecret));
-        var signatureSha = hmac.ComputeHash(Encoding.UTF8.GetBytes(signatureOrigin));
-        var signature = Convert.ToBase64String(signatureSha);
-
-        // authorization_origin → base64
-        var authorizationOrigin = $"api_key=\"{apiKey}\", algorithm=\"hmac-sha256\", headers=\"host date request-line\", signature=\"{signature}\"";
-        var authorization = Convert.ToBase64String(Encoding.UTF8.GetBytes(authorizationOrigin));
-
         return new List<(string, string)>
         {
-            ("Authorization", authorization),
-            ("Date", date),
-            ("Host", host)
+            ("Authorization", $"Bearer {apiKey}:{apiSecret}")
         };
     }
 

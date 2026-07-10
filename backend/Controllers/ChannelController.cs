@@ -19,17 +19,20 @@ public class ChannelController : ControllerBase
     private readonly BaseRepository<ModelChain> _chainRepo;
     private readonly IFreeSql _db;
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly ImageForwardEngine _imageForwardEngine;
 
     public ChannelController(
         BaseRepository<Channel> channelRepo,
         BaseRepository<ModelChain> chainRepo,
         IFreeSql db,
-        IHttpClientFactory httpClientFactory)
+        IHttpClientFactory httpClientFactory,
+        ImageForwardEngine imageForwardEngine)
     {
         _channelRepo = channelRepo;
         _chainRepo = chainRepo;
         _db = db;
         _httpClientFactory = httpClientFactory;
+        _imageForwardEngine = imageForwardEngine;
     }
 
     // ===== 渠道 CRUD =====
@@ -111,18 +114,18 @@ public class ChannelController : ControllerBase
     }
 
     [HttpPut("{id}")]
-    public async Task<ApiResult<string>> Update(long id, [FromBody] Channel channel)
+    public async Task<ApiResult<string>> Update(long id, [FromBody] UpdateChannelRequest channel)
     {
         var existing = await _channelRepo.GetByIdAsync(id);
         if (existing == null) return ApiResult<string>.Fail("渠道不存在", 404);
 
-        existing.Name = channel.Name;
+        existing.Name = channel.Name ?? existing.Name;
         existing.Remark = channel.Remark;
-        existing.SupplierType = channel.SupplierType;
-        existing.ApiAddress = channel.ApiAddress;
+        existing.SupplierType = channel.SupplierType ?? existing.SupplierType;
+        existing.ApiAddress = channel.ApiAddress ?? existing.ApiAddress;
         existing.TimeoutSeconds = channel.TimeoutSeconds;
         existing.SseEnabled = channel.SseEnabled;
-        existing.ProtocolType = channel.ProtocolType;
+        existing.ProtocolType = channel.ProtocolType ?? existing.ProtocolType;
         existing.PassthroughPaths = channel.PassthroughPaths ?? channel.SupportedPaths;
         existing.SupportedPaths = channel.SupportedPaths;
         existing.FallbackTarget = channel.FallbackTarget ?? channel.ProtocolType;
@@ -137,19 +140,28 @@ public class ChannelController : ControllerBase
         if (channel.ApiKeys is { Count: > 0 })
         {
             await _db.Delete<ApiKey>().Where(k => k.ChannelId == id).ExecuteAffrowsAsync();
+            // 讯飞等供应商第二密钥可从顶层 ApiKey2 透传（编辑保存时不动密钥列表也能更新 APISecret）
+            var apiKey2 = channel.ApiKey2;
             var newKeys = channel.ApiKeys
                 .Where(k => !string.IsNullOrWhiteSpace(k.KeyValue))
                 .Select(k => new ApiKey
                 {
                     ChannelId = id,
                     KeyValue = k.KeyValue,
-                    KeyValue2 = k.KeyValue2, // 透传第二密钥（讯飞 apiSecret 等）
+                    KeyValue2 = !string.IsNullOrWhiteSpace(k.KeyValue2) ? k.KeyValue2 : apiKey2, // 透传第二密钥（讯飞 apiSecret 等）
                     Weight = k.Weight > 0 ? k.Weight : 1,
                     Status = k.Status,
                     CreatedAt = DateTime.UtcNow
                 }).ToList();
             if (newKeys.Count > 0)
                 await _db.Insert(newKeys).ExecuteAffrowsAsync();
+        }
+        else if (!string.IsNullOrWhiteSpace(channel.ApiKey2))
+        {
+            // 编辑保存时未动密钥列表，但顶层传了第二密钥（讯飞 APISecret）：更新现有所有密钥的 KeyValue2
+            await _db.Update<ApiKey>().Where(k => k.ChannelId == id)
+                .Set(a => a.KeyValue2, channel.ApiKey2)
+                .ExecuteAffrowsAsync();
         }
 
         // 同步更新模型映射（先删后插，批量操作）
@@ -365,6 +377,31 @@ public class ChannelController : ControllerBase
         });
     }
 
+    /// <summary>
+    /// 上游图片接口直测（管理端用）：跳过令牌/模型权限/计费，直接用渠道密钥+原始模型ID
+    /// 打一次上游平台图片接口，验证对接是否可用。仅用于"编辑上游对接"场景。
+    /// </summary>
+    [HttpPost("test-image-model")]
+    public async Task<ApiResult<object>> TestImageModel([FromBody] TestImageModelRequest request)
+    {
+        var (url, reqBody, status, respBody, latency, error) = await _imageForwardEngine.TestUpstreamImageAsync(
+            request.ChannelId, request.ModelId ?? "", request.Prompt ?? "一只柴犬",
+            request.Size, request.ResponseFormat, request.Image);
+
+        return ApiResult<object>.Success(new
+        {
+            channelId = request.ChannelId,
+            modelId = request.ModelId,
+            upstreamUrl = url,
+            requestBody = reqBody,
+            statusCode = status,
+            responseBody = respBody,
+            latencyMs = latency,
+            success = status >= 200 && status < 300,
+            error
+        });
+    }
+
     // ===== 模型链管理 =====
 
     [HttpGet("chains")]
@@ -389,13 +426,15 @@ public class ChannelController : ControllerBase
                     c.OriginalModelId,
                     c.Weight,
                     c.Priority,
-                    c.Enabled
+                    c.Enabled,
+                    c.ChainType
                 });
             }
             result.Add(new
             {
                 customModelId = g.Key,
                 displayName = g.FirstOrDefault(c => !string.IsNullOrEmpty(c.DisplayName))?.DisplayName ?? g.Key,
+                chainType = g.FirstOrDefault()?.ChainType ?? "Text",
                 nodes
             });
         }
@@ -495,63 +534,6 @@ public class ChannelController : ControllerBase
                 SupportedPaths = ["chat", "responses"],
                 IsOpenAIProtocol = true,
                 DefaultModels = []
-            },
-            // ===== 图片生成供应商（下游统一 /v1/images/generations，image 字段扩展支持图生图/多图） =====
-            new() {
-                Type = "VolcEngine", Name = "火山引擎/豆包 Seedream",
-                DefaultApi = "https://ark.cn-beijing.volces.com/api/v3",
-                SupportedPaths = ["images"],
-                IsOpenAIProtocol = true,
-                DefaultModels = ["doubao-seedream-4-0-250828", "doubao-seedream-4-5-251128", "doubao-seedream-5-0-260128"]
-            },
-            new() {
-                Type = "SiliconFlow", Name = "硅基流动",
-                DefaultApi = "https://api.siliconflow.cn/v1",
-                SupportedPaths = ["images"],
-                IsOpenAIProtocol = true,
-                DefaultModels = ["Kwai-Kolors/Kolors", "Qwen/Qwen-Image", "Qwen/Qwen-Image-Edit-2509", "Tongyi-MAI/Z-Image-Turbo", "blackforest-labs/FLUX.1-dev"]
-            },
-            new() {
-                Type = "Agnes", Name = "Agnes-Ai",
-                DefaultApi = "https://apihub.agnes-ai.com/v1",
-                SupportedPaths = ["images"],
-                IsOpenAIProtocol = true,
-                DefaultModels = ["agnes-image-2.0-flash", "agnes-image-2.1-flash"]
-            },
-            new() {
-                Type = "ModelScope", Name = "魔搭 ModelScope",
-                DefaultApi = "https://api-inference.modelscope.cn/v1",
-                SupportedPaths = ["images"],
-                IsOpenAIProtocol = true,
-                DefaultModels = ["Tongyi-MAI/Z-Image-Turbo", "Qwen/Qwen-Image", "Qwen/Qwen-Image-Edit-2509", "kolors"]
-            },
-            new() {
-                Type = "SenseNova", Name = "商汤 SenseNova U1",
-                DefaultApi = "https://api.sensenova.cn/v1",
-                SupportedPaths = ["images"],
-                IsOpenAIProtocol = true,
-                DefaultModels = ["sensenova-u1-fast"]
-            },
-            new() {
-                Type = "Xfyun", Name = "讯飞星火",
-                DefaultApi = "https://spark-api.cn-huabei-1.xf-yun.com",
-                SupportedPaths = ["images"],
-                IsOpenAIProtocol = false,
-                DefaultModels = ["tti", "HiDream"]
-            },
-            new() {
-                Type = "Gitee", Name = "Gitee AI",
-                DefaultApi = "https://ai.gitee.com/api/serverless",
-                SupportedPaths = ["images"],
-                IsOpenAIProtocol = true,
-                DefaultModels = ["FLUX.1-dev", "FLUX.1-schnell", "Kolors"]
-            },
-            new() {
-                Type = "DashScope", Name = "阿里云百炼 DashScope",
-                DefaultApi = "https://dashscope.aliyuncs.com/api/v1",
-                SupportedPaths = ["images"],
-                IsOpenAIProtocol = false,
-                DefaultModels = ["wanx2.1-t2i-turbo", "wanx2.1-t2i-plus", "wanx2.1-i2i-turbo"]
             }
         };
         return ApiResult<List<SupplierPreset>>.Success(presets);
@@ -624,11 +606,46 @@ public class ModelEntry
     public int Weight { get; set; } = 1;
 }
 
+/// <summary>渠道更新入参：含原渠道字段 + ApiKey2 顶层透传（讯飞 APISecret 等，编辑保存时不动密钥列表也能更新第二密钥）</summary>
+public class UpdateChannelRequest
+{
+    public long Id { get; set; }
+    public string? Name { get; set; }
+    public string? Remark { get; set; }
+    public string? SupplierType { get; set; }
+    public string? ApiAddress { get; set; }
+    public int TimeoutSeconds { get; set; } = 30;
+    public bool SseEnabled { get; set; }
+    public string? ProtocolType { get; set; }
+    public string? SupportedPaths { get; set; }
+    public string? PassthroughPaths { get; set; }
+    public string? FallbackTarget { get; set; }
+    public int CooldownSeconds { get; set; } = 60;
+    public string? ExtConfig { get; set; }
+    public bool Enabled { get; set; } = true;
+    /// <summary>密钥列表：传空数组=不同步保留原值；传新值=先删后插全量替换</summary>
+    public List<ApiKey>? ApiKeys { get; set; }
+    /// <summary>第二密钥（讯飞 APISecret 等）：顶层透传，传非空值时即便 ApiKeys 为空也会更新现有所有密钥的 KeyValue2</summary>
+    public string? ApiKey2 { get; set; }
+    /// <summary>模型映射：传值=先删后插全量同步；空数组/null=保留原值</summary>
+    public List<ChannelModel>? Models { get; set; }
+}
+
 public class TestModelRequest
 {
     public List<long> ChannelIds { get; set; } = new();
     public string? ModelId { get; set; }
     public string? TestMessage { get; set; }
+}
+
+public class TestImageModelRequest
+{
+    public long ChannelId { get; set; }
+    public string? ModelId { get; set; }
+    public string? Prompt { get; set; }
+    public string? Size { get; set; }
+    public string? ResponseFormat { get; set; }
+    public string? Image { get; set; }
 }
 
 public class SupplierPreset

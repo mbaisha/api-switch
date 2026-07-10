@@ -21,6 +21,12 @@ const routes = [
         meta: { title: '渠道管理', requiresAuth: true }
       },
       {
+        path: 'image-forward',
+        name: 'ImageForward',
+        component: () => import('../views/image/ImageForward.vue'),
+        meta: { title: '图片转发', requiresAuth: true }
+      },
+      {
         path: 'model-chains',
         name: 'ModelChains',
         component: () => import('../views/admin/ModelChains.vue'),
@@ -33,10 +39,10 @@ const routes = [
         meta: { title: '令牌管理', requiresAuth: true }
       },
       {
-        path: 'image-forward',
-        name: 'ImageForward',
-        component: () => import('../views/image/ImageForward.vue'),
-        meta: { title: '图片转发', requiresAuth: true }
+        path: 'test',
+        name: 'Test',
+        component: () => import('../views/admin/Test.vue'),
+        meta: { title: '接口测试', requiresAuth: true }
       },
       {
         path: 'logs',

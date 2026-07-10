@@ -9,6 +9,10 @@
         <template #icon><icon-plus /></template>
         新增上游对接
       </a-button>
+      <a-button size="large" type="outline" @click="openDownstreamTest">
+        <template #icon><icon-experiment /></template>
+        接口测试
+      </a-button>
     </div>
 
     <!-- 下游统一口径说明 -->
@@ -160,71 +164,70 @@
           </a-col>
         </a-row>
 
-        <!-- ===== 测试面板（折叠，默认收起） ===== -->
+        <!-- ===== 上游接口测试（折叠，默认收起） ===== -->
         <a-collapse :default-active-key="[]" style="margin-top:8px">
-          <a-collapse-item key="test" header="接口测试 ▶（点击展开）">
+          <a-collapse-item key="test" header="上游接口测试 ▶（点击展开，用本渠道密钥直测上游）">
             <div class="test-panel">
-              <div class="test-hint">调用对外端点 <code>/v1/images/generations</code> 验证对接。需已开通图片权限的令牌。</div>
+              <div class="test-hint">直接调用上游平台 <code>/images/generations</code> 验证对接是否可用。仅使用本渠道密钥与已选原始模型ID，不经过令牌/权限/计费。</div>
               <a-row :gutter="8">
                 <a-col :span="10">
-                  <a-form-item label="令牌" layout="vertical">
-                    <a-input v-model="testForm.token" placeholder="sk-xxx" allow-clear size="small" />
-                  </a-form-item>
-                </a-col>
-                <a-col :span="8">
-                  <a-form-item label="模型 customModelId" layout="vertical">
-                    <a-input v-model="testForm.model" :placeholder="wizardForm.name || 'doubao-seedream'" size="small" />
+                  <a-form-item label="原始模型ID" layout="vertical">
+                    <a-select v-model="upstreamTestForm.modelId" placeholder="从已有模型中选择" size="small" allow-search allow-clear>
+                      <a-option v-for="m in upstreamTestModelOptions" :key="m" :value="m">{{ m }}</a-option>
+                    </a-select>
                   </a-form-item>
                 </a-col>
                 <a-col :span="6">
                   <a-form-item label="尺寸 size" layout="vertical">
-                    <a-input v-model="testForm.size" placeholder="1024x1024" size="small" />
+                    <a-input v-model="upstreamTestForm.size" placeholder="1024x1024" size="small" />
                   </a-form-item>
                 </a-col>
-              </a-row>
-              <a-row :gutter="8">
-                <a-col :span="14">
-                  <a-form-item label="提示词 prompt" layout="vertical">
-                    <a-input v-model="testForm.prompt" placeholder="如: 一只柴犬" size="small" />
-                  </a-form-item>
-                </a-col>
-                <a-col :span="5">
+                <a-col :span="4">
                   <a-form-item label="返回格式" layout="vertical">
-                    <a-select v-model="testForm.responseFormat" size="small">
+                    <a-select v-model="upstreamTestForm.responseFormat" size="small">
                       <a-option value="url">url</a-option>
                       <a-option value="b64_json">b64_json</a-option>
                     </a-select>
                   </a-form-item>
                 </a-col>
-                <a-col :span="5">
+                <a-col :span="4">
                   <a-form-item label="&nbsp;" layout="vertical">
-                    <a-button type="primary" size="small" :loading="testRunning" @click="runTest" long>
+                    <a-button type="primary" size="small" :loading="upstreamTestRunning" @click="runUpstreamTest" long>
                       <template #icon><icon-experiment /></template>
                       测试
                     </a-button>
                   </a-form-item>
                 </a-col>
               </a-row>
-              <a-form-item label="参考图 image (可选，URL 或 Base64，多图每行一个)" layout="vertical">
-                <a-textarea v-model="testForm.image" :rows="2" placeholder="https://example.com/ref.png
-base64,iVBORw0KG..." size="small" />
-              </a-form-item>
+              <a-row :gutter="8">
+                <a-col :span="20">
+                  <a-form-item label="提示词 prompt" layout="vertical">
+                    <a-input v-model="upstreamTestForm.prompt" placeholder="如: 一只柴犬" size="small" />
+                  </a-form-item>
+                </a-col>
+                <a-col :span="4">
+                  <a-form-item label="&nbsp;" layout="vertical">
+                    <a-button size="small" type="outline" @click="loadUpstreamTestModels" long>刷新模型列表</a-button>
+                  </a-form-item>
+                </a-col>
+              </a-row>
 
-              <div v-if="testResult" class="test-section">
-                <div class="test-section-title">▼ 发送内容</div>
-                <pre class="test-payload">{{ testResult.request }}</pre>
+              <div v-if="upstreamTestResult" class="test-section">
+                <div class="test-section-title">▼ 发送到上游</div>
+                <div style="font-size:12px;color:var(--color-text-3);margin-bottom:4px">{{ upstreamTestResult.upstreamUrl }}</div>
+                <pre class="test-payload">{{ upstreamTestResult.request }}</pre>
               </div>
-              <div v-if="testResult" class="test-section">
+              <div v-if="upstreamTestResult" class="test-section">
                 <div class="test-section-title">
-                  ▼ 回显内容
-                  <a-tag :color="testResult.ok ? 'green' : 'red'" size="small">{{ testResult.ok ? '成功' : '失败' }} · {{ testResult.code }} · {{ testResult.duration }}ms</a-tag>
+                  ▼ 上游响应
+                  <a-tag :color="upstreamTestResult.ok ? 'green' : 'red'" size="small">{{ upstreamTestResult.ok ? '成功' : '失败' }} · {{ upstreamTestResult.code }} · {{ upstreamTestResult.duration }}ms</a-tag>
                 </div>
-                <pre class="test-payload">{{ testResult.response }}</pre>
+                <pre class="test-payload">{{ upstreamTestResult.response }}</pre>
               </div>
-              <div v-if="testResult && testResult.images.length > 0" class="test-section">
-                <div class="test-section-title">▼ 获取到的图片 ({{ testResult.images.length }} 张)</div>
+              <div v-if="upstreamTestResult && upstreamTestResult.images.length > 0" class="test-section">
+                <div class="test-section-title">▼ 上游返回图片 ({{ upstreamTestResult.images.length }} 张)</div>
                 <div class="test-images">
-                  <div v-for="(img, idx) in testResult.images" :key="idx" class="test-image-item">
+                  <div v-for="(img, idx) in upstreamTestResult.images" :key="idx" class="test-image-item">
                     <img :src="img.src" :alt="`图${idx+1}`" style="max-width:140px;max-height:140px;border:1px solid var(--color-border-2);border-radius:4px" @error="(e)=>e.target.style.display='none'" />
                     <div class="test-image-meta">
                       <a-tag size="small" :color="img.type === 'url' ? 'arcoblue' : 'orangered'">{{ img.type }}</a-tag>
@@ -277,6 +280,84 @@ base64,iVBORw0KG..." size="small" />
           </a-table>
         </a-tab-pane>
       </a-tabs>
+    </a-modal>
+
+    <!-- ===== 下游接口测试弹窗（独立菜单，用令牌+自定义模型ID测对外端点） ===== -->
+    <a-modal v-model:visible="downstreamTestVisible" title="接口测试 · 对外端点 /v1/images/generations" width="760px" :footer="false" :mask-closable="false">
+      <a-alert type="info" style="margin-bottom:12px">
+        此处用令牌与对外自定义模型ID走完整的下游链路（鉴权/链/计费/日志），用于验证整套服务对外可用。
+        验证上游对接是否可用请在「编辑上游对接」内使用上游接口测试。
+      </a-alert>
+      <a-form :model="testForm" layout="vertical" size="small">
+        <a-row :gutter="8">
+          <a-col :span="10">
+            <a-form-item label="令牌" required>
+              <a-input v-model="testForm.token" placeholder="sk-xxx" allow-clear />
+            </a-form-item>
+          </a-col>
+          <a-col :span="8">
+            <a-form-item label="模型 customModelId" required>
+              <a-input v-model="testForm.model" placeholder="如 doubao-seedream" />
+            </a-form-item>
+          </a-col>
+          <a-col :span="6">
+            <a-form-item label="尺寸 size">
+              <a-input v-model="testForm.size" placeholder="1024x1024" />
+            </a-form-item>
+          </a-col>
+        </a-row>
+        <a-row :gutter="8">
+          <a-col :span="14">
+            <a-form-item label="提示词 prompt" required>
+              <a-input v-model="testForm.prompt" placeholder="如: 一只柴犬" />
+            </a-form-item>
+          </a-col>
+          <a-col :span="5">
+            <a-form-item label="返回格式">
+              <a-select v-model="testForm.responseFormat">
+                <a-option value="url">url</a-option>
+                <a-option value="b64_json">b64_json</a-option>
+              </a-select>
+            </a-form-item>
+          </a-col>
+          <a-col :span="5">
+            <a-form-item label="&nbsp;">
+              <a-button type="primary" :loading="testRunning" @click="runTest" long>
+                <template #icon><icon-experiment /></template>
+                测试
+              </a-button>
+            </a-form-item>
+          </a-col>
+        </a-row>
+        <a-form-item label="参考图 image (可选，URL 或 Base64，多图每行一个)">
+          <a-textarea v-model="testForm.image" :rows="2" placeholder="https://example.com/ref.png
+base64,iVBORw0KG..." />
+        </a-form-item>
+      </a-form>
+
+      <div v-if="testResult" class="test-section">
+        <div class="test-section-title">▼ 发送内容</div>
+        <pre class="test-payload">{{ testResult.request }}</pre>
+      </div>
+      <div v-if="testResult" class="test-section">
+        <div class="test-section-title">
+          ▼ 回显内容
+          <a-tag :color="testResult.ok ? 'green' : 'red'" size="small">{{ testResult.ok ? '成功' : '失败' }} · {{ testResult.code }} · {{ testResult.duration }}ms</a-tag>
+        </div>
+        <pre class="test-payload">{{ testResult.response }}</pre>
+      </div>
+      <div v-if="testResult && testResult.images.length > 0" class="test-section">
+        <div class="test-section-title">▼ 获取到的图片 ({{ testResult.images.length }} 张)</div>
+        <div class="test-images">
+          <div v-for="(img, idx) in testResult.images" :key="idx" class="test-image-item">
+            <img :src="img.src" :alt="`图${idx+1}`" style="max-width:140px;max-height:140px;border:1px solid var(--color-border-2);border-radius:4px" @error="(e)=>e.target.style.display='none'" />
+            <div class="test-image-meta">
+              <a-tag size="small" :color="img.type === 'url' ? 'arcoblue' : 'orangered'">{{ img.type }}</a-tag>
+              <a-button v-if="img.type === 'url'" size="mini" type="text" @click="copyText(img.src)">复制</a-button>
+            </div>
+          </div>
+        </div>
+      </div>
     </a-modal>
   </div>
 </template>
@@ -339,14 +420,6 @@ const apiPlaceholder = computed(() => {
 })
 const apiHint = computed(() => {
   switch (wizardForm.supplierType) {
-    case 'VolcEngine': return '豆包/火山 Seedream，文生图与图生图共用 /images/generations，image 字段传参考图（最多10张）'
-    case 'SiliconFlow': return '硅基流动，size 自动映射为 image_size，多图自动拆为 image/image2/image3'
-    case 'Agnes': return 'Agnes-Ai，image 与 response_format 自动塞进 extra_body'
-    case 'ModelScope': return '魔搭，图生图用 images 字段（base64 数组），URL 参考图自动下载转 base64，走异步任务模式'
-    case 'SenseNova': return '商汤 U1，size 限白名单 11 个值，图生图自动包装为 chat/completions + modalities'
-    case 'Xfyun': return '讯飞星火，HMAC 签名鉴权（apiKey=appKey, 第二密钥=apiSecret），三段式请求体，HiDream 图生图走异步任务'
-    case 'Gitee': return 'Gitee AI，OpenAI 兼容，/images/generations + /images/edits'
-    case 'DashScope': return '阿里云百炼，通义万相，走 services/aigc 异步任务模式'
     default: return '系统将自动拼接正确的接口路径'
   }
 })
@@ -400,9 +473,13 @@ async function submitWizard() {
         timeoutSeconds: wizardForm.timeoutSeconds, cooldownSeconds: wizardForm.cooldownSeconds,
         protocolType: 'Chat', sseEnabled: false, supportedPaths, passthroughPaths: supportedPaths, fallbackTarget: 'Chat',
         extConfig, enabled: wizardForm.enabled,
-        apiKeys: apiKeys.length > 0 ? apiKeys.map(k => ({ keyValue: k, keyValue2: apiKey2, weight: 1, status: 1 })) : null
+        // 空数组=不同步密钥（保留原值），传 null 会被 ASP.NET 必填校验拒掉
+        apiKeys: apiKeys.length > 0 ? apiKeys.map(k => ({ keyValue: k, keyValue2: apiKey2, weight: 1, status: 1 })) : [],
+        // 讯飞 APISecret 等第二密钥：顶层透传，后端收到后即便不动密钥列表也会更新现有所有密钥的 KeyValue2
+        apiKey2,
+        // 模型走全量同步（后端先删后插），避免每次保存重复累加；空数组=保留原值不动
+        models: allModels.length > 0 ? allModels : []
       })
-      if (allModels.length > 0) await channelApi.batchAddModels(editingChannelId.value, allModels)
       Message.success('对接更新成功')
     } else {
       await channelApi.create({
@@ -422,24 +499,40 @@ async function editChannel(record) {
   editingChannelId.value = record.id
   wizardVisible.value = true
   const preset = supplierPresets.value.find(p => p.type === record.supplierType)
-  let xfyunAppId = '', apiKey2 = ''
+  let xfyunAppId = ''
   try { if (record.extConfig) xfyunAppId = JSON.parse(record.extConfig).appId || '' } catch { /* ignore */ }
-  try { if (record._existingKeys?.length > 0) apiKey2 = record._existingKeys[0].keyValue2 || '' } catch { /* ignore */ }
   Object.assign(wizardForm, {
     name: record.name, remark: record.remark || '', supplierType: record.supplierType,
     apiAddress: record.apiAddress, timeoutSeconds: record.timeoutSeconds, cooldownSeconds: record.cooldownSeconds,
-    enabled: record.enabled, _availableModels: preset?.defaultModels || [], _xfyunAppId: xfyunAppId, _apiKey2: apiKey2
+    enabled: record.enabled, _availableModels: preset?.defaultModels || [], _xfyunAppId: xfyunAppId, _apiKey2: ''
   })
   onSupplierChange()
   keysTextarea.value = ''
-  selectedPresetModels.value = []
   manualModels.value = []
   manualModelInput.value = ''
   try {
     const [keysRes, modelsRes] = await Promise.all([channelApi.getKeys(record.id), channelApi.getModels(record.id)])
     existingKeys.value = keysRes.code === 200 ? (keysRes.data || []) : []
     existingModels.value = modelsRes.code === 200 ? (modelsRes.data || []) : []
-  } catch { existingKeys.value = []; existingModels.value = [] }
+    // 回填讯飞 APISecret（第二密钥）：从拉到的现有密钥取 KeyValue2，不依赖列表挂的 _existingKeys
+    if (wizardForm.supplierType === 'Xfyun' && existingKeys.value.length > 0) {
+      wizardForm._apiKey2 = existingKeys.value[0].keyValue2 || ''
+    }
+    // 回显勾选状态：推荐模型中已存在于渠道的，恢复勾选；不在推荐列表里的（手动加的）放回 manualModels
+    const presetSet = new Set(wizardForm._availableModels)
+    const existingIds = new Set(existingModels.value.map(m => m.originalModelId))
+    selectedPresetModels.value = wizardForm._availableModels.filter(m => existingIds.has(m))
+    manualModels.value = existingModels.value
+      .filter(m => !presetSet.has(m.originalModelId))
+      .map(m => m.originalModelId)
+  } catch {
+    existingKeys.value = []; existingModels.value = []
+    selectedPresetModels.value = []; manualModels.value = []
+  }
+  // 上游测试：加载已有模型列表给下拉用，清空上次测试结果
+  upstreamTestResult.value = null
+  Object.assign(upstreamTestForm, { modelId: '', prompt: '一只柴犬，水彩风格', size: '1024x1024', responseFormat: 'url' })
+  await loadUpstreamTestModels()
 }
 
 async function removeExistingKey(keyId) {
@@ -490,7 +583,8 @@ async function addSingleModel() {
 async function deleteModel(modelId) { await channelApi.deleteModel(detailChannel.value.id, modelId); Message.success('删除成功'); await loadModels() }
 async function deleteKey(keyId) { await channelApi.deleteKey(detailChannel.value.id, keyId); Message.success('已删除'); await loadKeys() }
 
-// ===== 接口测试 =====
+// ===== 下游接口测试（独立菜单，对外端点） =====
+const downstreamTestVisible = ref(false)
 const testRunning = ref(false)
 const testForm = reactive({
   token: '',
@@ -501,6 +595,11 @@ const testForm = reactive({
   image: ''
 })
 const testResult = ref(null) // { ok, code, duration, request, response, images: [{type, src}] }
+
+function openDownstreamTest() {
+  downstreamTestVisible.value = true
+  testResult.value = null
+}
 
 async function runTest() {
   if (!testForm.token.trim()) { Message.warning('请填写令牌'); return }
@@ -560,6 +659,73 @@ async function runTest() {
   }
 }
 
+// ===== 上游接口测试（编辑弹窗内，用渠道密钥直测上游） =====
+const upstreamTestRunning = ref(false)
+const upstreamTestForm = reactive({ modelId: '', prompt: '一只柴犬，水彩风格', size: '1024x1024', responseFormat: 'url' })
+const upstreamTestResult = ref(null) // { ok, code, duration, upstreamUrl, request, response, images }
+const upstreamTestModelOptions = ref([])
+
+async function loadUpstreamTestModels() {
+  if (!editingChannelId.value) return
+  try {
+    const res = await channelApi.getModels(editingChannelId.value)
+    upstreamTestModelOptions.value = res.code === 200 ? (res.data || []).map(m => m.originalModelId) : []
+  } catch { upstreamTestModelOptions.value = [] }
+}
+
+async function runUpstreamTest() {
+  if (!editingChannelId.value) { Message.warning('请先保存对接后再测试'); return }
+  if (!upstreamTestForm.modelId.trim()) { Message.warning('请选择原始模型ID'); return }
+  if (!upstreamTestForm.prompt.trim()) { Message.warning('请填写提示词'); return }
+
+  upstreamTestRunning.value = true
+  upstreamTestResult.value = null
+  const startTime = Date.now()
+
+  try {
+    const resp = await channelApi.testImageModel({
+      channelId: editingChannelId.value,
+      modelId: upstreamTestForm.modelId,
+      prompt: upstreamTestForm.prompt,
+      size: upstreamTestForm.size || null,
+      responseFormat: upstreamTestForm.responseFormat,
+      image: null
+    })
+    const d = resp.data || {}
+    // 解析图片
+    const images = []
+    try {
+      const body = JSON.parse(d.responseBody || '{}')
+      const data = body.data || body.images || []
+      for (const item of data) {
+        if (item.url) images.push({ type: 'url', src: item.url })
+        else if (item.b64_json) images.push({ type: 'b64', src: `data:image/png;base64,${item.b64_json}` })
+      }
+    } catch { /* ignore parse */ }
+    upstreamTestResult.value = {
+      ok: d.success === true,
+      code: d.statusCode || 0,
+      duration: Date.now() - startTime,
+      upstreamUrl: d.upstreamUrl || '',
+      request: d.requestBody || '',
+      response: d.responseBody || (d.error ? JSON.stringify({ error: d.error }) : ''),
+      images
+    }
+  } catch (e) {
+    upstreamTestResult.value = {
+      ok: false,
+      code: e.response?.status || 0,
+      duration: Date.now() - startTime,
+      upstreamUrl: '',
+      request: '',
+      response: JSON.stringify(e.response?.data || { error: e.message }, null, 2),
+      images: []
+    }
+  } finally {
+    upstreamTestRunning.value = false
+  }
+}
+
 function copyText(text) {
   navigator.clipboard?.writeText(text).then(() => Message.success('已复制')).catch(() => {})
 }
@@ -571,11 +737,13 @@ async function loadAll() {
     const [chRes, presetRes] = await Promise.all([channelApi.list(), channelApi.getSupplierPresets()])
     if (presetRes.code === 200) supplierPresets.value = (presetRes.data || []).filter(p => imageSupplierTypes.includes(p.type))
     if (chRes.code === 200) {
-      // 只展示图片类供应商的渠道（按 supplierType 过滤）
-      const list = (chRes.data || []).filter(ch => imageSupplierTypes.includes(ch.supplierType))
+      // 图片转发页只展示图片渠道：supportedPaths 含 images 的归此处管，文本 LLM 渠道归渠道管理
+      const list = (chRes.data || []).filter(ch => (ch.supportedPaths || '').split(',').map(s => s.trim()).includes('images'))
       for (const ch of list) {
         try { const d = await channelApi.getModels(ch.id); ch._modelCount = d.code === 200 ? (d.data?.length || 0) : 0 } catch { ch._modelCount = 0 }
       }
+      // 按 ID 从小到大排序
+      list.sort((a, b) => a.id - b.id)
       channels.value = list
     }
   } finally { loading.value = false }
