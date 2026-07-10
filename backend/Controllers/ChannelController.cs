@@ -536,6 +536,63 @@ public class ChannelController : ControllerBase
                 SupportedPaths = ["chat", "responses"],
                 IsOpenAIProtocol = true,
                 DefaultModels = []
+            },
+            // ===== 图片生成供应商（图片转发子系统专用，下游统一 /v1/images/generations，image 字段扩展支持图生图/多图） =====
+            new() {
+                Type = "VolcEngine", Name = "火山引擎/豆包 Seedream",
+                DefaultApi = "https://ark.cn-beijing.volces.com/api/v3",
+                SupportedPaths = ["images"],
+                IsOpenAIProtocol = true,
+                DefaultModels = ["doubao-seedream-4-0-250828", "doubao-seedream-4-5-251128", "doubao-seedream-5-0-260128"]
+            },
+            new() {
+                Type = "SiliconFlow", Name = "硅基流动",
+                DefaultApi = "https://api.siliconflow.cn/v1",
+                SupportedPaths = ["images"],
+                IsOpenAIProtocol = true,
+                DefaultModels = ["Kwai-Kolors/Kolors", "Qwen/Qwen-Image", "Qwen/Qwen-Image-Edit-2509", "Tongyi-MAI/Z-Image-Turbo", "blackforest-labs/FLUX.1-dev"]
+            },
+            new() {
+                Type = "Agnes", Name = "Agnes-Ai",
+                DefaultApi = "https://apihub.agnes-ai.com/v1",
+                SupportedPaths = ["images"],
+                IsOpenAIProtocol = true,
+                DefaultModels = ["agnes-image-2.0-flash", "agnes-image-2.1-flash"]
+            },
+            new() {
+                Type = "ModelScope", Name = "魔搭 ModelScope",
+                DefaultApi = "https://api-inference.modelscope.cn/v1",
+                SupportedPaths = ["images"],
+                IsOpenAIProtocol = true,
+                DefaultModels = ["Tongyi-MAI/Z-Image-Turbo", "Qwen/Qwen-Image", "Qwen/Qwen-Image-Edit-2509", "kolors"]
+            },
+            new() {
+                Type = "SenseNova", Name = "商汤 SenseNova U1",
+                DefaultApi = "https://token.sensenova.cn/v1",
+                SupportedPaths = ["images"],
+                IsOpenAIProtocol = true,
+                DefaultModels = ["sensenova-u1-fast"]
+            },
+            new() {
+                Type = "Xfyun", Name = "讯飞星辰 MaaS",
+                DefaultApi = "https://maas-api.cn-huabei-1.xf-yun.com",
+                SupportedPaths = ["images"],
+                IsOpenAIProtocol = false,
+                DefaultModels = ["qwen-image-2512", "xopqwentti20b", "tti", "HiDream"]
+            },
+            new() {
+                Type = "Gitee", Name = "Gitee AI",
+                DefaultApi = "https://ai.gitee.com/api/serverless",
+                SupportedPaths = ["images"],
+                IsOpenAIProtocol = true,
+                DefaultModels = ["FLUX.1-dev", "FLUX.1-schnell", "Kolors"]
+            },
+            new() {
+                Type = "DashScope", Name = "阿里云百炼 DashScope",
+                DefaultApi = "https://dashscope.aliyuncs.com/api/v1",
+                SupportedPaths = ["images"],
+                IsOpenAIProtocol = false,
+                DefaultModels = ["wanx2.1-t2i-turbo", "wanx2.1-t2i-plus", "wanx2.1-i2i-turbo"]
             }
         };
         return ApiResult<List<SupplierPreset>>.Success(presets);

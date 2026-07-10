@@ -446,6 +446,14 @@ const apiPlaceholder = computed(() => {
 })
 const apiHint = computed(() => {
   switch (wizardForm.supplierType) {
+    case 'VolcEngine': return '豆包/火山 Seedream，OpenAI 兼容，文生图与图生图共用 /images/generations，image 字段传参考图（最多10张）'
+    case 'SiliconFlow': return '硅基流动，OpenAI 兼容，size 自动映射为 image_size，多图自动拆为 image/image2/image3'
+    case 'Agnes': return 'Agnes-Ai，OpenAI 兼容，image 与 response_format 自动塞进 extra_body，return_base64 控制 base64 返回'
+    case 'ModelScope': return '魔搭，OpenAI 兼容，图生图用 images 字段（base64 数组），URL 参考图自动下载转 base64，走异步任务模式'
+    case 'SenseNova': return '商汤 U1，OpenAI 兼容，size 限白名单 11 个值，图生图自动包装为 chat/completions + modalities:image'
+    case 'Xfyun': return '讯飞星辰 MaaS，三段式请求体，Bearer apikey:apisecret 鉴权（不用 HMAC 签名），header.patch_id 必填，HiDream 图生图走异步任务'
+    case 'Gitee': return 'Gitee AI，OpenAI 兼容，/images/generations + /images/edits'
+    case 'DashScope': return '阿里云百炼，通义万相，走 services/aigc 异步任务模式'
     default: return '系统将自动拼接正确的接口路径'
   }
 })

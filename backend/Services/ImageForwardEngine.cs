@@ -649,7 +649,8 @@ public class ImageForwardEngine
     private async Task<string> ToBase64Async(string imageRef)
     {
         if (string.IsNullOrEmpty(imageRef)) return "";
-        if (imageRef.StartsWith("data:")) return imageRef; // 已是 data URI        if (imageRef.StartsWith("http://") || imageRef.StartsWith("https://"))
+        if (imageRef.StartsWith("data:")) return imageRef; // 已是 data URI
+        if (imageRef.StartsWith("http://") || imageRef.StartsWith("https://"))
         {
             try
             {
