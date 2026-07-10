@@ -53,6 +53,10 @@ public class Channel
     [Column(DbType = "text")]
     public string? ExtConfig { get; set; }
 
+    /// <summary>图片转发：支持的分辨率列表（逗号分隔，如 "720x1280,1280x720"）；为空表示不限制，按客户端原样透传</summary>
+    [Column(StringLength = 500)]
+    public string? SupportedSizes { get; set; }
+
     /// <summary>模型冷却时长(秒)</summary>
     public int CooldownSeconds { get; set; } = 60;
 

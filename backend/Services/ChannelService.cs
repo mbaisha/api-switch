@@ -88,6 +88,7 @@ public class ChannelService
                         ApiKey2 = key.KeyValue2,
                         ApiKeyId = key.Id,
                         ExtConfig = channel.ExtConfig,
+                        SupportedSizes = channel.SupportedSizes,
                         ProtocolType = channel.ProtocolType,
                         PassthroughPaths = channel.PassthroughPaths ?? channel.SupportedPaths ?? "chat",
                         SupportedPaths = channel.SupportedPaths ?? "chat",
@@ -130,6 +131,7 @@ public class ChannelService
                         ApiKey2 = key.KeyValue2,
                         ApiKeyId = key.Id,
                         ExtConfig = channel.ExtConfig,
+                        SupportedSizes = channel.SupportedSizes,
                         ProtocolType = channel.ProtocolType,
                         PassthroughPaths = channel.PassthroughPaths ?? channel.SupportedPaths ?? "chat",
                         SupportedPaths = channel.SupportedPaths ?? "chat",
@@ -172,6 +174,8 @@ public class LoadBalanceNode
     public long ApiKeyId { get; set; }
     /// <summary>渠道扩展配置(讯飞 appId 等)</summary>
     public string? ExtConfig { get; set; }
+    /// <summary>图片转发：支持的分辨率列表（逗号分隔）；为空表示不限制</summary>
+    public string? SupportedSizes { get; set; }
     public string ProtocolType { get; set; } = "Chat";
     /// <summary>支持的接口路径（逗号分隔: chat,responses,messages）</summary>
     public string SupportedPaths { get; set; } = "chat";

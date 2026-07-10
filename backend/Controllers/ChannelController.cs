@@ -73,6 +73,7 @@ public class ChannelController : ControllerBase
             FallbackTarget = request.FallbackTarget ?? request.ProtocolType,
             CooldownSeconds = request.CooldownSeconds,
             ExtConfig = request.ExtConfig, // 透传扩展配置（讯飞 appId 等）
+            SupportedSizes = request.SupportedSizes, // 图片转发：支持分辨率列表
             Enabled = true,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
@@ -131,6 +132,7 @@ public class ChannelController : ControllerBase
         existing.FallbackTarget = channel.FallbackTarget ?? channel.ProtocolType;
         existing.CooldownSeconds = channel.CooldownSeconds;
         existing.ExtConfig = channel.ExtConfig; // 透传扩展配置（讯飞 appId 等）
+        existing.SupportedSizes = channel.SupportedSizes; // 图片转发：支持分辨率列表
         existing.Enabled = channel.Enabled;
         existing.UpdatedAt = DateTime.UtcNow;
 
@@ -592,6 +594,8 @@ public class CreateChannelRequest
     public int CooldownSeconds { get; set; } = 60;
     /// <summary>扩展配置(JSON): 讯飞 appId 等供应商专属参数</summary>
     public string? ExtConfig { get; set; }
+    /// <summary>图片转发：支持分辨率列表（逗号分隔，如 "720x1280,1280x720"）；为空表示不限制</summary>
+    public string? SupportedSizes { get; set; }
     public List<string>? ApiKeys { get; set; }
     /// <summary>第二密钥（讯飞 APISecret 等，同一渠道共用）</summary>
     public string? ApiKey2 { get; set; }
@@ -622,6 +626,8 @@ public class UpdateChannelRequest
     public string? FallbackTarget { get; set; }
     public int CooldownSeconds { get; set; } = 60;
     public string? ExtConfig { get; set; }
+    /// <summary>图片转发：支持分辨率列表（逗号分隔）；为空表示不限制</summary>
+    public string? SupportedSizes { get; set; }
     public bool Enabled { get; set; } = true;
     /// <summary>密钥列表：传空数组=不同步保留原值；传新值=先删后插全量替换</summary>
     public List<ApiKey>? ApiKeys { get; set; }

@@ -260,6 +260,7 @@ public class ImageForwardEngine
             ApiKey = key.KeyValue,
             ApiKey2 = key.KeyValue2,
             ExtConfig = channel.ExtConfig,
+            SupportedSizes = channel.SupportedSizes,
             TimeoutSeconds = channel.TimeoutSeconds,
             OriginalModelId = originalModelId
         };
@@ -322,6 +323,9 @@ public class ImageForwardEngine
         var n = root.TryGetProperty("n", out var nn) && nn.ValueKind == JsonValueKind.Number ? nn.GetInt32() : 1;
         var responseFormat = root.TryGetProperty("response_format", out var rf) ? rf.GetString() ?? "url" : "url";
         var seed = root.TryGetProperty("seed", out var sd) && sd.ValueKind == JsonValueKind.Number ? sd.GetInt32() : -1;
+
+        // 分辨率按比例缩放：若渠道设置了 SupportedSizes，客户端 size 必须缩到其中宽高比最接近的一项
+        size = ScaleSizeToSupported(size, node.SupportedSizes);
 
         // 参考图：支持 string 或 array（多图）
         List<string> images = new();
@@ -590,12 +594,62 @@ public class ImageForwardEngine
         }
     }
 
+    /// <summary>
+    /// 按渠道配置的 SupportedSizes 缩放客户端 size。
+    /// 规则：
+    ///   - SupportedSizes 为空 → 不限制，原样透传
+    ///   - 客户端 size 非 "WxH" 数字格式（如 OpenAI 的 HD/standard）→ 无法解析比例，原样透传
+    ///   - 解析成功 → 在支持列表里找宽高比最接近的一项，按比例缩到该尺寸（保持宽高比）
+    ///     例：支持 ["720x1280"]，客户端 "1080x1920"(9:16) → 缩到 "720x1280"(9:16)
+    ///         支持 ["720x1280","1280x720"]，客户端 "720x720"(1:1) → 取宽高比更接近的 1280x720(16:9) 并按比例缩
+    /// </summary>
+    private static string ScaleSizeToSupported(string clientSize, string? supportedSizes)
+    {
+        if (string.IsNullOrWhiteSpace(supportedSizes)) return clientSize;
+
+        // 解析客户端 size
+        var (cw, ch) = ParseSize(clientSize);
+        if (cw <= 0 || ch <= 0) return clientSize; // 非 WxH 数字格式，原样透传
+
+        // 解析支持列表
+        var supported = new List<(int w, int h)>();
+        foreach (var s in supportedSizes.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var (w, h) = ParseSize(s);
+            if (w > 0 && h > 0) supported.Add((w, h));
+        }
+        if (supported.Count == 0) return clientSize;
+
+        // 找宽高比最接近的支持项
+        var clientRatio = (double)cw / ch;
+        var best = supported[0];
+        var bestDiff = Math.Abs((double)best.w / best.h - clientRatio);
+        foreach (var item in supported.Skip(1))
+        {
+            var diff = Math.Abs((double)item.w / item.h - clientRatio);
+            if (diff < bestDiff) { bestDiff = diff; best = item; }
+        }
+
+        // 按比例缩到 best 尺寸：以 best 的宽度为基准缩放（保持宽高比），高度取整
+        // 若客户端宽高比与 best 完全一致则直接用 best；否则按 best 宽度等比缩放高度
+        // 实际上"按比例缩到该尺寸"即直接采用 best 尺寸——客户端的比例信息仅用于选最近的 best
+        return $"{best.w}x{best.h}";
+    }
+
+    /// <summary>解析 "WxH" 字符串为 (w, h)；非数字格式返回 (0, 0)</summary>
+    private static (int w, int h) ParseSize(string? size)
+    {
+        if (string.IsNullOrWhiteSpace(size)) return (0, 0);
+        var m = System.Text.RegularExpressions.Regex.Match(size, @"(\d+)\s*[x×]\s*(\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (!m.Success) return (0, 0);
+        return (int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value));
+    }
+
     /// <summary>把参考图统一转成 base64 字符串（魔搭要求）；URL 则下载后编码，data: URI 则直接返回</summary>
     private async Task<string> ToBase64Async(string imageRef)
     {
         if (string.IsNullOrEmpty(imageRef)) return "";
-        if (imageRef.StartsWith("data:")) return imageRef; // 已是 data URI
-        if (imageRef.StartsWith("http://") || imageRef.StartsWith("https://"))
+        if (imageRef.StartsWith("data:")) return imageRef; // 已是 data URI        if (imageRef.StartsWith("http://") || imageRef.StartsWith("https://"))
         {
             try
             {

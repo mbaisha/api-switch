@@ -125,6 +125,21 @@
           </a-col>
         </a-row>
 
+        <!-- 支持分辨率（图片大小限制） -->
+        <a-divider orientation="left" style="margin: 4px 0 8px">支持分辨率（图片大小）</a-divider>
+        <div style="display:flex;gap:6px;margin-bottom:6px">
+          <a-input v-model="sizeInput" placeholder="如 720x1280" size="small" @keydown.enter.prevent="addSupportedSize" />
+          <a-button size="small" type="outline" @click="addSupportedSize" :disabled="!sizeInput.trim()">+</a-button>
+        </div>
+        <div class="form-hint" style="margin-bottom:6px">
+          填写后下游请求的 size 将按宽高比缩到最接近的支持尺寸；留空表示不限制，按客户端原样透传。
+        </div>
+        <div v-if="wizardForm._supportedSizeList.length > 0" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px">
+          <a-tag v-for="(sz, idx) in wizardForm._supportedSizeList" :key="idx" closable size="small" @close="wizardForm._supportedSizeList.splice(idx, 1)">
+            <code style="font-size:11px">{{ sz }}</code>
+          </a-tag>
+        </div>
+
         <!-- API 密钥 + 模型映射 左右两栏 -->
         <a-row :gutter="12" style="margin-top:4px">
           <a-col :span="12">
@@ -403,8 +418,19 @@ const editingChannelId = ref(null)
 const wizardForm = reactive({
   name: '', remark: '', supplierType: 'VolcEngine', apiAddress: '',
   timeoutSeconds: 120, cooldownSeconds: 60, enabled: true,
-  _xfyunAppId: '', _apiKey2: '', _availableModels: []
+  _xfyunAppId: '', _apiKey2: '', _availableModels: [],
+  _supportedSizeList: [] // 支持分辨率列表（如 ["720x1280"]），空=不限制
 })
+const sizeInput = ref('')
+function addSupportedSize() {
+  const v = sizeInput.value.trim()
+  if (!v) return
+  // 基础校验：须为 WxH 数字格式
+  if (!/^\d+\s*[x×]\s*\d+$/i.test(v)) { Message.warning('格式应为 宽x高，如 720x1280'); return }
+  const normalized = v.replace(/\s/g, '').replace('×', 'x').toLowerCase()
+  if (!wizardForm._supportedSizeList.includes(normalized)) wizardForm._supportedSizeList.push(normalized)
+  sizeInput.value = ''
+}
 const keysTextarea = ref('')
 const modelBatchCustomId = ref('')
 const selectedPresetModels = ref([])
@@ -427,7 +453,8 @@ const apiHint = computed(() => {
 function showCreateWizard() {
   editingChannelId.value = null
   wizardVisible.value = true
-  Object.assign(wizardForm, { name: '', remark: '', supplierType: 'VolcEngine', apiAddress: '', timeoutSeconds: 120, cooldownSeconds: 60, enabled: true, _xfyunAppId: '', _apiKey2: '', _availableModels: [] })
+  Object.assign(wizardForm, { name: '', remark: '', supplierType: 'VolcEngine', apiAddress: '', timeoutSeconds: 120, cooldownSeconds: 60, enabled: true, _xfyunAppId: '', _apiKey2: '', _availableModels: [], _supportedSizeList: [] })
+  sizeInput.value = ''
   keysTextarea.value = ''
   modelBatchCustomId.value = ''
   selectedPresetModels.value = []
@@ -464,6 +491,7 @@ async function submitWizard() {
     const apiKeys = keysTextarea.value.split('\n').map(k => k.trim()).filter(Boolean)
     const extConfig = wizardForm.supplierType === 'Xfyun' && wizardForm._xfyunAppId ? JSON.stringify({ appId: wizardForm._xfyunAppId }) : null
     const apiKey2 = wizardForm.supplierType === 'Xfyun' ? wizardForm._apiKey2 : null
+    const supportedSizes = wizardForm._supportedSizeList.join(',')
 
     if (editingChannelId.value) {
       const existing = channels.value.find(ch => ch.id === editingChannelId.value)
@@ -472,7 +500,7 @@ async function submitWizard() {
         supplierType: wizardForm.supplierType, apiAddress: wizardForm.apiAddress,
         timeoutSeconds: wizardForm.timeoutSeconds, cooldownSeconds: wizardForm.cooldownSeconds,
         protocolType: 'Chat', sseEnabled: false, supportedPaths, passthroughPaths: supportedPaths, fallbackTarget: 'Chat',
-        extConfig, enabled: wizardForm.enabled,
+        extConfig, enabled: wizardForm.enabled, supportedSizes,
         // 空数组=不同步密钥（保留原值），传 null 会被 ASP.NET 必填校验拒掉
         apiKeys: apiKeys.length > 0 ? apiKeys.map(k => ({ keyValue: k, keyValue2: apiKey2, weight: 1, status: 1 })) : [],
         // 讯飞 APISecret 等第二密钥：顶层透传，后端收到后即便不动密钥列表也会更新现有所有密钥的 KeyValue2
@@ -485,7 +513,7 @@ async function submitWizard() {
       await channelApi.create({
         name: wizardForm.name, remark: wizardForm.remark, supplierType: wizardForm.supplierType, apiAddress: wizardForm.apiAddress,
         timeoutSeconds: wizardForm.timeoutSeconds, cooldownSeconds: wizardForm.cooldownSeconds,
-        protocolType: 'Chat', supportedPaths, passthroughPaths: supportedPaths, fallbackTarget: 'Chat', sseEnabled: false, extConfig,
+        protocolType: 'Chat', supportedPaths, passthroughPaths: supportedPaths, fallbackTarget: 'Chat', sseEnabled: false, extConfig, supportedSizes,
         apiKeys, apiKey2, models: allModels
       })
       Message.success('对接创建成功')
@@ -501,10 +529,12 @@ async function editChannel(record) {
   const preset = supplierPresets.value.find(p => p.type === record.supplierType)
   let xfyunAppId = ''
   try { if (record.extConfig) xfyunAppId = JSON.parse(record.extConfig).appId || '' } catch { /* ignore */ }
+  const supportedSizeList = (record.supportedSizes || '').split(',').map(s => s.trim()).filter(Boolean)
   Object.assign(wizardForm, {
     name: record.name, remark: record.remark || '', supplierType: record.supplierType,
     apiAddress: record.apiAddress, timeoutSeconds: record.timeoutSeconds, cooldownSeconds: record.cooldownSeconds,
-    enabled: record.enabled, _availableModels: preset?.defaultModels || [], _xfyunAppId: xfyunAppId, _apiKey2: ''
+    enabled: record.enabled, _availableModels: preset?.defaultModels || [], _xfyunAppId: xfyunAppId, _apiKey2: '',
+    _supportedSizeList: supportedSizeList
   })
   onSupplierChange()
   keysTextarea.value = ''
