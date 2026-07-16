@@ -49,6 +49,14 @@ public class Channel
     [Column(StringLength = 20)]
     public string FallbackTarget { get; set; } = "Chat";
 
+    /// <summary>扩展配置(JSON): 部分供应商的专属参数，如讯飞星火的 appId</summary>
+    [Column(DbType = "text")]
+    public string? ExtConfig { get; set; }
+
+    /// <summary>图片转发：支持的分辨率列表（逗号分隔，如 "720x1280,1280x720"）；为空表示不限制，按客户端原样透传</summary>
+    [Column(StringLength = 500)]
+    public string? SupportedSizes { get; set; }
+
     /// <summary>模型冷却时长(秒)</summary>
     public int CooldownSeconds { get; set; } = 60;
 

@@ -49,6 +49,7 @@ export const channelApi = {
   getSupplierPresets: () => http.get('/admin/channels/supplier-presets'),
   getAvailableModels: () => http.get('/admin/channels/available-models'),
   testModel: (data) => http.post('/admin/channels/test-model', data),
+  testImageModel: (data) => http.post('/admin/channels/test-image-model', data),
   // 模型链
   getChains: () => http.get('/admin/channels/chains'),
   createChain: (data) => http.post('/admin/channels/chains', data),
@@ -75,7 +76,9 @@ export const logApi = {
 
 // 看板
 export const dashboardApi = {
-  get: () => http.get('/admin/dashboard')
+  get: () => http.get('/admin/dashboard'),
+  upstreamKeys: () => http.get('/admin/dashboard/upstream-keys'),
+  modelUsage: () => http.get('/admin/dashboard/model-usage')
 }
 
 // 认证

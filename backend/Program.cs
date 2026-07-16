@@ -35,6 +35,7 @@ builder.Services.AddScoped(typeof(backend.Repository.BaseRepository<>));
 builder.Services.AddScoped<ChannelService>();
 builder.Services.AddScoped<TokenService>();
 builder.Services.AddScoped<ForwardEngine>();
+builder.Services.AddScoped<ImageForwardEngine>();
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<BillingService>();
 
@@ -177,10 +178,18 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors();
+
+// 静态文件支持（合并部署模式：后端直接托管前端 SPA 静态文件）
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
 app.UseSerilogRequestLogging();
 app.UseRateLimit();        // IP + Token 双维度限流
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+
+// SPA 回退：所有非 API 路径返回 index.html（Vue Router 前端路由）
+app.MapFallbackToFile("index.html");
 
 app.Run();

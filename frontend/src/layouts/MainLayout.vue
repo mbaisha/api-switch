@@ -16,6 +16,10 @@
           <template #icon><icon-apps /></template>
           渠道管理
         </a-menu-item>
+        <a-menu-item key="imageForward">
+          <template #icon><icon-image /></template>
+          图片转发
+        </a-menu-item>
         <a-menu-item key="modelChains">
           <template #icon><icon-branch /></template>
           模型链配置
@@ -23,6 +27,10 @@
         <a-menu-item key="tokens">
           <template #icon><icon-safe /></template>
           令牌管理
+        </a-menu-item>
+        <a-menu-item key="test">
+          <template #icon><icon-experiment /></template>
+          接口测试
         </a-menu-item>
         <a-menu-item key="logs">
           <template #icon><icon-file /></template>
@@ -70,7 +78,7 @@ import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import {
   IconDashboard, IconApps, IconSafe, IconFile,
-  IconBookmark, IconSettings, IconExport, IconUser, IconBranch
+  IconBookmark, IconSettings, IconExport, IconUser, IconBranch, IconImage, IconExperiment
 } from '@arco-design/web-vue/es/icon'
 
 const router = useRouter()
@@ -80,6 +88,8 @@ const currentRoute = computed(() => {
   const name = route.name?.toLowerCase() || 'dashboard'
   // 映射 menu key 到 route name
   if (name === 'modelchains') return 'modelChains'
+  if (name === 'test') return 'test'
+  if (name === 'imageforward') return 'imageForward'
   return name
 })
 
@@ -89,6 +99,8 @@ const menuKeyToRouteName = {
   channels: 'Channels',
   modelChains: 'ModelChains',
   tokens: 'Tokens',
+  imageForward: 'ImageForward',
+  test: 'Test',
   logs: 'Logs',
   billing: 'Billing',
   settings: 'Settings'

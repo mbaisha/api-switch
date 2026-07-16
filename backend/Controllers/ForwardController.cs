@@ -6,7 +6,8 @@ using Microsoft.AspNetCore.Mvc;
 namespace backend.Controllers;
 
 /// <summary>
-/// AI接口转发 - 对外统一入口
+/// AI接口转发 - 对外统一入口（LLM 文本对话转发）
+/// 图片转发见 ImageForwardController，两者完全区隔。
 /// </summary>
 [ApiController]
 public class ForwardController : ControllerBase

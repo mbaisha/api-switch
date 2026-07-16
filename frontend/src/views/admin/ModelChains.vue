@@ -26,6 +26,7 @@
             <a-tag v-if="chain.displayName && chain.displayName !== chain.customModelId" color="arcoblue" size="small">
               {{ chain.displayName }}
             </a-tag>
+            <a-tag size="small" :color="getChainTypeColor(chain)">{{ getChainTypeLabel(chain) }}</a-tag>
             <a-tag size="small" color="arcoblue">{{ chain.nodes.length }} 个节点</a-tag>
             <a-tag size="small" :color="getEnabledCount(chain) > 0 ? 'green' : 'red'">
               {{ getEnabledCount(chain) }} 个启用
@@ -107,6 +108,13 @@
           <a-form-item label="显示名称">
             <a-input v-model="wizardForm.displayName" placeholder="如: GPT-4 多源负载池" />
           </a-form-item>
+          <a-form-item label="链类型" required>
+            <a-radio-group v-model="wizardForm.chainType" @change="onChainTypeChange">
+              <a-radio value="Text">文本 LLM（/v1/chat/completions）</a-radio>
+              <a-radio value="Image">图片转发（/v1/images/generations）</a-radio>
+            </a-radio-group>
+            <div class="form-hint">文本链只参与 LLM 转发，图片链只参与图片转发，同 ID 可同时建两条互不串味。切换链类型会清空已选的不匹配渠道节点</div>
+          </a-form-item>
           <a-form-item label="描述">
             <a-textarea v-model="wizardForm.description" placeholder="可选: 链用途说明" :rows="2" />
           </a-form-item>
@@ -134,7 +142,7 @@
               <a-row :gutter="8" align="center" style="margin-bottom: 8px">
                 <a-col :span="11">
                   <a-select v-model="node.channelId" placeholder="选择渠道" size="small" @change="(v) => onNodeChannelChange(idx, v)" style="width:100%">
-                    <a-option v-for="ch in channels" :key="ch.id" :value="ch.id">
+                    <a-option v-for="ch in getChannelsForChainType(wizardForm.chainType)" :key="ch.id" :value="ch.id">
                       {{ ch.name }} <span style="color:var(--color-text-3);font-size:11px">{{ getSupplierName(ch.supplierType) }}</span>
                     </a-option>
                   </a-select>
@@ -236,10 +244,11 @@
       <a-form :model="addNodeForm" layout="vertical">
         <a-form-item label="选择渠道" required>
           <a-select v-model="addNodeForm.channelId" placeholder="选择渠道" @change="onAddNodeChannelChange">
-            <a-option v-for="ch in channels" :key="ch.id" :value="ch.id">
+            <a-option v-for="ch in getChannelsForChainType(addNodeChainType)" :key="ch.id" :value="ch.id">
               {{ ch.name }} ({{ getSupplierName(ch.supplierType) }})
             </a-option>
           </a-select>
+          <div class="form-hint">仅展示「{{ addNodeChainType === 'Image' ? '图片' : '文本 LLM' }}」渠道，链类型不可混选</div>
         </a-form-item>
         <a-form-item label="原始模型 ID" required>
           <a-select
@@ -332,8 +341,26 @@ function getSupplierName(type) {
 function getChannelName(id) {
   return channels.value.find(c => c.id === id)?.name || '未知'
 }
+function getChainTypeColor(chain) {
+  // 后端回传链类型，回退兼容取节点首项
+  const t = chain.chainType || chain.nodes?.[0]?.chainType || 'Text'
+  return t === 'Image' ? 'orangered' : 'arcoblue'
+}
+function getChainTypeLabel(chain) {
+  const t = chain.chainType || chain.nodes?.[0]?.chainType || 'Text'
+  return t === 'Image' ? '图片' : '文本'
+}
 function getChannelModels(channelId) {
   return channelModelsMap.value[channelId] || []
+}
+
+// 判断渠道是否为图片渠道（supportedPaths 含 images）
+function isImageChannel(ch) {
+  return (ch.supportedPaths || '').split(',').map(s => s.trim()).includes('images')
+}
+// 按链类型过滤可选渠道：文本链只可选文本 LLM 渠道，图片链只可选图片渠道
+function getChannelsForChainType(chainType) {
+  return channels.value.filter(ch => chainType === 'Image' ? isImageChannel(ch) : !isImageChannel(ch))
 }
 
 function getEnabledCount(chain) {
@@ -394,7 +421,8 @@ const wizardSaving = ref(false)
 const wizardForm = reactive({
   customModelId: '',
   displayName: '',
-  description: ''
+  description: '',
+  chainType: 'Text'
 })
 const wizardNodes = ref([])
 
@@ -416,7 +444,7 @@ const chainWizardSteps = computed(() => {
 function showCreateWizard() {
   wizardStep.value = 0
   wizardVisible.value = true
-  Object.assign(wizardForm, { customModelId: '', displayName: '', description: '' })
+  Object.assign(wizardForm, { customModelId: '', displayName: '', description: '', chainType: 'Text' })
   wizardNodes.value = []
 }
 
@@ -437,6 +465,16 @@ function removeNodeRow(idx) {
 function onNodeChannelChange(idx, channelId) {
   // 切换渠道时清空已选模型
   wizardNodes.value[idx].originalModelId = ''
+}
+
+// 链类型切换：清空已选的不匹配链类型的渠道节点，防止误提交错误类型
+function onChainTypeChange() {
+  const allow = (ch) => wizardForm.chainType === 'Image' ? isImageChannel(ch) : !isImageChannel(ch)
+  wizardNodes.value = wizardNodes.value.filter(node => {
+    if (!node.channelId) return true
+    const ch = channels.value.find(c => c.id === node.channelId)
+    return ch ? allow(ch) : true
+  })
 }
 
 const groupedNodes = computed(() => {
@@ -483,6 +521,7 @@ async function submitChain() {
       await channelApi.createChain({
         customModelId: wizardForm.customModelId,
         displayName: wizardForm.displayName || null,
+        chainType: wizardForm.chainType,
         channelId: node.channelId,
         originalModelId: node.originalModelId,
         weight: node.weight,
@@ -499,6 +538,7 @@ async function submitChain() {
 // ===== 添加节点到已有链 =====
 const addNodeVisible = ref(false)
 const addNodeTarget = ref(null)
+const addNodeChainType = ref('Text')
 const addNodeForm = reactive({
   channelId: null,
   originalModelId: '',
@@ -509,6 +549,7 @@ const addNodeForm = reactive({
 
 function addNodeToChain(chain) {
   addNodeTarget.value = chain.customModelId
+  addNodeChainType.value = chain.chainType || 'Text'
   Object.assign(addNodeForm, {
     channelId: null, originalModelId: '', weight: 1, priority: 0, enabled: true
   })
@@ -526,6 +567,7 @@ async function submitAddNode() {
   }
   await channelApi.createChain({
     customModelId: addNodeTarget.value,
+    chainType: addNodeChainType.value,
     channelId: addNodeForm.channelId,
     originalModelId: addNodeForm.originalModelId,
     weight: addNodeForm.weight,
