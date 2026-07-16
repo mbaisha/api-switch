@@ -299,6 +299,11 @@
             <a-button size="small" type="outline" @click="batchAddKeys" :disabled="!batchKeysText.trim()" style="margin-top: 8px">批量添加</a-button>
           </div>
           <a-table :columns="keyColumns" :data="detailKeys" row-key="id" size="small" :pagination="false">
+            <template #status="{ record }">
+              <a-tag :color="record.status === 1 ? 'green' : record.status === 2 ? 'red' : 'gray'" size="small">
+                {{ record.status === 1 ? '正常' : record.status === 2 ? '失效' : '禁用' }}
+              </a-tag>
+            </template>
             <template #action="{ record }">
               <a-button size="mini" type="text" status="danger" @click="deleteKey(record.id)">删除</a-button>
             </template>

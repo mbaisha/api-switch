@@ -68,6 +68,7 @@ cat > "$HOME/.claude/settings.json" << 'EOF'
 }
 EOF
 # docker compose -f ./ai-api/docker-api.yml up -d
+docker compose -f ./bin/docker-api.yml --profile external-db up -d
 echo "==> 安装完成！"
 echo "    atomcode、.NET 10 SDK 和 Claude Code 已安装。"
 echo "    请执行 'source $SHELL_RC' 或重新打开终端以加载环境变量。"

@@ -75,17 +75,18 @@ public class DashboardController : ControllerBase
             });
         var modelUsage = modelUsageRaw.OrderByDescending(g => g.count).Take(5).ToList();
 
-        // 令牌用量排行 Top 5
+        // 令牌用量排行 Top 5（含 token 用量）
         var tokenUsageRaw = await _db.Select<CallLog>()
             .GroupBy(a => a.TokenValue)
             .OrderByDescending(a => a.Count())
             .ToListAsync(a => new
             {
                 tokenRaw = a.Key ?? "unknown",
-                count = a.Count()
+                count = a.Count(),
+                tokens = a.Sum(a.Value.InputTokens + a.Value.OutputTokens)
             });
         var tokenUsage = tokenUsageRaw.OrderByDescending(g => g.count).Take(5)
-            .Select(g => new { token = MaskToken(g.tokenRaw), g.count }).ToList();
+            .Select(g => new { token = MaskToken(g.tokenRaw), g.count, g.tokens }).ToList();
 
         return ApiResult<object>.Success(new
         {

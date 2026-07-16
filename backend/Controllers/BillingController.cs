@@ -25,9 +25,9 @@ public class BillingController : ControllerBase
         _db = db;
     }
 
-    /// <summary>账单列表(分页+筛选)</summary>
+    /// <summary>账单列表(分页+筛选)，含令牌备注</summary>
     [HttpGet("records")]
-    public async Task<ApiResult<PageResult<BillingRecord>>> GetRecords(
+    public async Task<ApiResult<PageResult<object>>> GetRecords(
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 20,
         [FromQuery] long? tokenId = null,
@@ -47,9 +47,34 @@ public class BillingController : ControllerBase
             .Take(pageSize)
             .ToListAsync();
 
-        return ApiResult<PageResult<BillingRecord>>.Success(new PageResult<BillingRecord>
+        // 查找令牌备注
+        var tokenIds = list.Select(r => r.TokenId).Distinct().ToList();
+        var remarkMap = new Dictionary<long, string?>();
+        if (tokenIds.Count > 0)
         {
-            Total = total, Page = page, PageSize = pageSize, List = list
+            var tokenRemarks = await _db.Select<Token>().Where(t => tokenIds.Contains(t.Id)).ToListAsync(t => new { t.Id, t.Remark });
+            foreach (var tr in tokenRemarks)
+                remarkMap[tr.Id] = tr.Remark;
+        }
+
+        var resultList = list.Select(r => (object)new
+        {
+            r.Id,
+            r.TokenId,
+            r.TokenValue,
+            TokenRemark = remarkMap.TryGetValue(r.TokenId, out var remark) ? remark : null,
+            r.CustomModelId,
+            r.InputTokens,
+            r.OutputTokens,
+            r.Cost,
+            r.InputPrice,
+            r.OutputPrice,
+            r.CreatedAt
+        }).ToList();
+
+        return ApiResult<PageResult<object>>.Success(new PageResult<object>
+        {
+            Total = total, Page = page, PageSize = pageSize, List = resultList
         });
     }
 

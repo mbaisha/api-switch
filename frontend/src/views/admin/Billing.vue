@@ -128,7 +128,8 @@ const summary = ref({ totalRecords: 0, totalCost: 0, totalInputTokens: 0, totalO
 
 const recordColumns = [
   { title: 'ID', dataIndex: 'id', width: 60 },
-  { title: '令牌', dataIndex: 'tokenValue', width: 200 },
+  { title: '令牌', dataIndex: 'tokenValue', width: 180 },
+  { title: '备注', dataIndex: 'tokenRemark', ellipsis: true, width: 100 },
   { title: '模型', dataIndex: 'customModelId', width: 120 },
   { title: '输入Token', dataIndex: 'inputTokens', width: 90 },
   { title: '输出Token', dataIndex: 'outputTokens', width: 90 },

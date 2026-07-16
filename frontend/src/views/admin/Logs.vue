@@ -111,7 +111,8 @@ const opFilter = ref({ action: '', startTime: '', endTime: '' })
 
 const callColumns = [
   { title: 'ID', dataIndex: 'id', width: 60 },
-  { title: '令牌', dataIndex: 'tokenValue', width: 200 },
+  { title: '令牌', dataIndex: 'tokenValue', width: 180 },
+  { title: '备注', dataIndex: 'tokenRemark', ellipsis: true, width: 100 },
   { title: 'IP', dataIndex: 'clientIp', width: 130 },
   { title: '模型', dataIndex: 'customModelId', width: 120 },
   { title: '渠道', dataIndex: 'channelName', width: 100 },

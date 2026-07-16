@@ -245,7 +245,9 @@ async function loadTokens() {
   loading.value = true
   try {
     const res = await tokenApi.list()
-    if (res.code === 200) tokens.value = res.data
+    if (res.code === 200) {
+      tokens.value = (res.data || []).sort((a, b) => a.id - b.id)
+    }
   } finally { loading.value = false }
 }
 
