@@ -16,6 +16,10 @@ public class ModelChain
     [Column(StringLength = 200)]
     public string CustomModelId { get; set; } = string.Empty;
 
+    /// <summary>链类型: Text(文本LLM) / Image(图片转发)。转发时按此类型只取对应链，文本与图片互不串味</summary>
+    [Column(StringLength = 10)]
+    public string ChainType { get; set; } = "Text";
+
     /// <summary>模型显示名称</summary>
     [Column(StringLength = 200)]
     public string? DisplayName { get; set; }

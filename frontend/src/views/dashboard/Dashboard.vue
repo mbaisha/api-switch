@@ -34,6 +34,36 @@
         </a-card>
       </a-col>
     </a-row>
+
+    <!-- API Key 用量（按渠道+密钥） -->
+    <a-card title="API Key 调用量（按渠道)" class="chart-row" :loading="keyLoading">
+      <a-collapse :default-active-key="upstreamStats.map(c => c.channelId)" accordion>
+        <a-collapse-item v-for="ch in upstreamStats" :key="ch.channelId" :header="`${ch.channelName} (${ch.supplierType}) · 共 ${ch.totalKeys} 个密钥 · ${ch.totalCalls} 次调用`">
+          <a-table :columns="keyColumns" :data="ch.keys" row-key="Id" size="small" :pagination="false">
+            <template #status="{ record }">
+              <a-tag :color="record.Status === 1 ? 'green' : record.Status === 2 ? 'red' : 'gray'" size="small">
+                {{ record.Status === 1 ? '正常' : record.Status === 2 ? '失效' : '禁用' }}
+              </a-tag>
+            </template>
+          </a-table>
+        </a-collapse-item>
+      </a-collapse>
+      <a-empty v-if="upstreamStats.length === 0" description="暂无密钥用量数据" />
+    </a-card>
+
+    <!-- 模型用量明细（按自定义模型ID + 按上游原始模型ID 双视角） -->
+    <a-row :gutter="16" class="chart-row">
+      <a-col :span="12">
+        <a-card title="模型用量明细（按对外模型ID）" :loading="modelDetailLoading">
+          <a-table :columns="modelByCustomColumns" :data="modelByCustom" row-key="model" size="small" :pagination="{ pageSize: 8 }" />
+        </a-card>
+      </a-col>
+      <a-col :span="12">
+        <a-card title="模型用量明细（按上游模型/渠道）" :loading="modelDetailLoading">
+          <a-table :columns="modelByOriginalColumns" :data="modelByOriginal" row-key="customModel" size="small" :pagination="{ pageSize: 8 }" />
+        </a-card>
+      </a-col>
+    </a-row>
   </div>
 </template>
 
@@ -56,6 +86,11 @@ const stats = ref([
 
 const modelUsage = ref([])
 const tokenUsage = ref([])
+const upstreamStats = ref([])
+const modelByCustom = ref([])
+const modelByOriginal = ref([])
+const keyLoading = ref(false)
+const modelDetailLoading = ref(false)
 
 const modelColumns = [
   { title: '#', slotName: 'rank', width: 50 },
@@ -63,14 +98,39 @@ const modelColumns = [
   { title: '调用次数', dataIndex: 'count', width: 100 },
   { title: 'Token用量', dataIndex: 'tokens', width: 100 }
 ]
-
 const tokenColumns = [
   { title: '#', slotName: 'rank', width: 50 },
   { title: '令牌', dataIndex: 'token' },
   { title: '调用次数', dataIndex: 'count', width: 100 }
 ]
+const keyColumns = [
+  { title: '密钥', dataIndex: 'keyValue', ellipsis: true, width: 220 },
+  { title: '调用次数', dataIndex: 'TotalCalls', width: 90 },
+  { title: '成功次数', dataIndex: 'SuccessCalls', width: 90 },
+  { title: 'Token用量', dataIndex: 'UsedTokens', width: 100 },
+  { title: '权重', dataIndex: 'Weight', width: 60 },
+  { title: '状态', slotName: 'status', width: 80 }
+]
+const modelByCustomColumns = [
+  { title: '对外模型ID', dataIndex: 'model' },
+  { title: '调用', dataIndex: 'calls', width: 70 },
+  { title: '成功', dataIndex: 'success', width: 60 },
+  { title: '失败', dataIndex: 'failed', width: 60 },
+  { title: '输入Token', dataIndex: 'inputTokens', width: 100 },
+  { title: '输出Token', dataIndex: 'outputTokens', width: 100 },
+  { title: '总Token', dataIndex: 'totalTokens', width: 100 }
+]
+const modelByOriginalColumns = [
+  { title: '对外模型', dataIndex: 'customModel' },
+  { title: '上游模型', dataIndex: 'originalModel' },
+  { title: '渠道', dataIndex: 'channel' },
+  { title: '调用', dataIndex: 'calls', width: 70 },
+  { title: '成功', dataIndex: 'success', width: 60 },
+  { title: '失败', dataIndex: 'failed', width: 60 },
+  { title: '总Token', dataIndex: 'totalTokens', width: 100 }
+]
 
-onMounted(async () => {
+async function loadMain() {
   try {
     const res = await dashboardApi.get()
     if (res.code === 200 && res.data) {
@@ -88,9 +148,33 @@ onMounted(async () => {
       modelUsage.value = d.modelUsage || []
       tokenUsage.value = d.tokenUsage || []
     }
-  } catch (e) {
-    console.error(e)
-  }
+  } catch (e) { console.error(e) }
+}
+
+async function loadUpstreamKeys() {
+  keyLoading.value = true
+  try {
+    const res = await dashboardApi.upstreamKeys()
+    if (res.code === 200) upstreamStats.value = res.data?.channels || []
+  } catch (e) { console.error(e) } finally { keyLoading.value = false }
+}
+
+async function loadModelUsage() {
+  modelDetailLoading.value = true
+  try {
+    const res = await dashboardApi.modelUsage()
+    if (res.code === 200) {
+      modelByCustom.value = res.data?.byCustom || []
+      modelByOriginal.value = res.data?.byOriginal || []
+    }
+  } catch (e) { console.error(e) } finally { modelDetailLoading.value = false }
+}
+
+// 三个请求并行发起，互不阻塞；任一失败不影响其他
+onMounted(() => {
+  loadMain()
+  loadUpstreamKeys()
+  loadModelUsage()
 })
 </script>
 

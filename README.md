@@ -109,6 +109,29 @@
 - 请求/响应消息与图片关联可追溯
 - 支持 `data:image/base64` 与 URL 引用两种格式
 
+### 图片生成转发（文生图 / 图生图 / 多图）
+
+- **下游统一接口**：`POST /v1/images/generations`，兼容 OpenAI Images 协议，并以 `image` 字段扩展支持图生图与多图输入（无需另开 `/v1/images/edits`）
+- **上游已对接平台**（各平台接口规则严格对齐，统一转换）：
+
+  | 平台 | SupplierType | 文生图 | 图生图 | 多图 | 备注 |
+  |---|---|---|---|---|---|
+  | OpenAI / Azure / DeepSeek / Together / Groq / Custom | 对应类型 | ✅ | `image` 字段 | ✅ 数组 | 近透传 |
+  | 火山引擎/豆包 Seedream | `VolcEngine` | ✅ | `image` | ✅ 最多10张 | OpenAI 兼容，`size` 支持 `2K`/`2048x2048` |
+  | �硅基流动 | `SiliconFlow` | ✅ | `image`/`image2`/`image3` | ✅ 拆字段 | `size`→`image_size`，响应 `images`→`data` |
+  | Agnes-Ai | `Agnes` | ✅ | `extra_body.image` | ✅ 数组 | `response_format` 亦塞进 `extra_body` |
+  | 魔搭 ModelScope | `ModelScope` | ✅ | `images`(base64 数组) | ✅ 1-3张 | 异步任务模式，URL 参考图自动下载转 base64 |
+  | 商汤 SenseNova U1 | `SenseNova` | ✅ | `chat/completions`+`modalities` | ✅ | `size` 限 11 个白名单值，图生图自动包装 |
+  | 讯飞星火 | `Xfyun` | ✅ | HiDream 异步 | ✅ | HMAC 签名鉴权（双密钥），三段式请求体 |
+  | Gitee AI | `Gitee` | ✅ | `image` | ✅ | OpenAI 兼容 |
+  | 阿里云百炼 DashScope | `DashScope` | ✅ | `image` | ✅ | 通义万相，异步任务模式 |
+
+- **数据传输格式**：
+  - 生成图片：URL 或 Base64 返回（`response_format: "url"` 或 `"b64_json"`），原样透传不做代理落盘
+  - 参考图片：URL 或 Base64 提交（`image` 字段，string 或数组），适配器内部按平台规则转换（如魔搭需 base64 则自动下载 URL 转码）
+- **计费兼容**：优先使用上游返回的 `usage.output_tokens`，未返回则按生成张数估算计费
+- **讯飞专属配置**：渠道需在「扩展配置」填 `{"appId":"xxx"}`；API Key 的「第二密钥」填 apiSecret（用于 HMAC 签名）
+
 ***
 
 ## 快速启动

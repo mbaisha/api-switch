@@ -35,6 +35,7 @@ builder.Services.AddScoped(typeof(backend.Repository.BaseRepository<>));
 builder.Services.AddScoped<ChannelService>();
 builder.Services.AddScoped<TokenService>();
 builder.Services.AddScoped<ForwardEngine>();
+builder.Services.AddScoped<ImageForwardEngine>();
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<BillingService>();
 

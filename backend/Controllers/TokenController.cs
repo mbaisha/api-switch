@@ -61,6 +61,7 @@ public class TokenController : ControllerBase
         existing.RemainingBalance = token.RemainingBalance;
         existing.RateLimitWindow = token.RateLimitWindow;
         existing.RateLimitCount = token.RateLimitCount;
+        existing.ImageEnabled = token.ImageEnabled; // 图片转发权限独立管控
         existing.UpdatedAt = DateTime.UtcNow;
 
         await _tokenRepo.UpdateAsync(existing);

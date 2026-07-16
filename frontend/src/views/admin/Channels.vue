@@ -442,11 +442,13 @@ const columns = [
 ]
 
 function getSupplierColor(type) {
-  const map = { OpenAI: '#10a37f', Azure: '#0078d4', Anthropic: '#d97757', Google: '#4285f4', DeepSeek: '#4d6bfe', Groq: '#f97316', Together: '#0f9', Custom: 'gray' }
+  const map = { OpenAI: '#10a37f', Azure: '#0078d4', Anthropic: '#d97757', Google: '#4285f4', DeepSeek: '#4d6bfe', Groq: '#f97316', Together: '#0f9', Custom: 'gray',
+    VolcEngine: '#ff5a00', SiliconFlow: '#6f42c1', Agnes: '#e91e63', ModelScope: '#0052cc', SenseNova: '#21a675', Xfyun: '#b34975', Gitee: '#c71d23', DashScope: '#ff6a00' }
   return map[type] || 'gray'
 }
 function getSupplierName(type) {
-  const map = { OpenAI: 'OpenAI', Azure: 'Azure', Anthropic: 'Claude', Google: 'Gemini', DeepSeek: 'DeepSeek', Groq: 'Groq', Together: 'Together', Custom: '自定义' }
+  const map = { OpenAI: 'OpenAI', Azure: 'Azure', Anthropic: 'Claude', Google: 'Gemini', DeepSeek: 'DeepSeek', Groq: 'Groq', Together: 'Together', Custom: '自定义',
+    VolcEngine: '豆包', SiliconFlow: '硅基', Agnes: 'Agnes', ModelScope: '魔搭', SenseNova: '商汤', Xfyun: '讯飞', Gitee: 'Gitee', DashScope: '百炼' }
   return map[type] || type
 }
 function getPreset(type) {
@@ -526,7 +528,8 @@ async function loadAll() {
   try {
     const [chRes, presetRes] = await Promise.all([channelApi.list(), channelApi.getSupplierPresets()])
     if (chRes.code === 200) {
-      const list = chRes.data || []
+      // 渠道管理只展示文本 LLM 渠道：排除图片转发渠道（supportedPaths 含 images 的归图片转发页管）
+      const list = (chRes.data || []).filter(ch => !(ch.supportedPaths || '').split(',').map(s => s.trim()).includes('images'))
       for (const ch of list) {
         try {
           const detailRes = await channelApi.getModels(ch.id)
@@ -662,12 +665,10 @@ async function submitWizard() {
         timeoutSeconds: wizardForm.timeoutSeconds, cooldownSeconds: wizardForm.cooldownSeconds,
         protocolType: wizardForm.protocolType, sseEnabled: wizardForm.sseEnabled,
         supportedPaths, passthroughPaths: (wizardForm._passthroughPathList || []).join(','),
-        fallbackTarget: wizardForm.fallbackTarget, enabled: existingChannel?.enabled ?? true
+        fallbackTarget: wizardForm.fallbackTarget, enabled: existingChannel?.enabled ?? true,
+        // 空数组=不同步密钥（保留原值），传 null 会被 ASP.NET 必填校验拒掉
+        apiKeys: apiKeys.length > 0 ? apiKeys.map(k => ({ keyValue: k, weight: 1, status: 1 })) : []
       })
-      // 编辑时也保存密钥（如果有新输入的）
-      if (apiKeys.length > 0) {
-        await channelApi.batchAddKeys(editingChannelId.value, apiKeys)
-      }
       // 编辑时也保存模型（如果有新添加的）
       if (allModels.length > 0) {
         await channelApi.batchAddModels(editingChannelId.value, allModels)
@@ -681,7 +682,8 @@ async function submitWizard() {
         protocolType: wizardForm.protocolType, supportedPaths,
         passthroughPaths: (wizardForm._passthroughPathList || []).join(','),
         fallbackTarget: wizardForm.fallbackTarget,
-        sseEnabled: wizardForm.sseEnabled, apiKeys, models: allModels
+        sseEnabled: wizardForm.sseEnabled,
+        apiKeys, models: allModels
       }
       const res = await channelApi.create(payload)
       if (res.code === 200) Message.success('渠道创建成功！')
@@ -699,6 +701,7 @@ async function editChannel(record) {
   wizardVisible.value = true
   wizardStep.value = 0  // 编辑模式从 step 0 开始，step 0 即"配置参数"
   const preset = supplierPresets.value.find(p => p.type === record.supplierType)
+
   Object.assign(wizardForm, {
     name: record.name, remark: record.remark || '', supplierType: record.supplierType,
     apiAddress: record.apiAddress, timeoutSeconds: record.timeoutSeconds,

@@ -146,8 +146,10 @@ public static class TokenEstimator
 
     /// <summary>
     /// 检测 SSE 数据行是否是包含 usage 信息的最后一个 chunk
-    /// OpenAI 在 stream_options: {"include_usage": true} 时
-    /// 最后一个 data 行会包含 usage 字段
+    /// 支持：
+    ///   - OpenAI: data: {..., usage: {prompt_tokens, completion_tokens}}（stream_options.include_usage）
+    ///   - Anthropic: event: message_delta \n data: {type:"message_delta", usage:{input_tokens, output_tokens}}
+    ///     注意 Anthropic 的 output_tokens 是本次增量，需累计；message_start 里 input_tokens 是 prompt 总数
     /// </summary>
     public static bool TryExtractStreamUsage(string line, out int inputTokens, out int outputTokens)
     {
@@ -175,8 +177,18 @@ public static class TokenEstimator
 
                 if (!hasChoices || HasFinishReason(choices))
                 {
+                    // OpenAI 范式：prompt_tokens / completion_tokens
                     inputTokens = usage.TryGetProperty("prompt_tokens", out var pt) ? pt.GetInt32() : 0;
                     outputTokens = usage.TryGetProperty("completion_tokens", out var ct) ? ct.GetInt32() : 0;
+
+                    // Anthropic 范式：input_tokens / output_tokens
+                    // 注意：Anthropic 流式 message_delta 里的 output_tokens 是【本次增量】不是累计，
+                    //       需要外层累加；这里返回增量，由调用方累加。
+                    if (inputTokens == 0 && usage.TryGetProperty("input_tokens", out var itA) && itA.ValueKind == JsonValueKind.Number)
+                        inputTokens = itA.GetInt32();
+                    if (outputTokens == 0 && usage.TryGetProperty("output_tokens", out var otA) && otA.ValueKind == JsonValueKind.Number)
+                        outputTokens = otA.GetInt32();
+
                     return inputTokens > 0 || outputTokens > 0;
                 }
             }
@@ -184,6 +196,60 @@ public static class TokenEstimator
         catch { }
 
         return false;
+    }
+
+    /// <summary>
+    /// 检测 SSE 行是否是 Anthropic 的 message_start 事件（含完整 prompt 的 input_tokens）
+    /// Anthropic 流式：event: message_start \n data: {type:"message_start", message:{usage:{input_tokens: N}}}
+    /// 这里返回的 input_tokens 是完整的输入 token 数，message_delta 里不会再重复给。
+    /// </summary>
+    public static bool TryExtractAnthropicMessageStartUsage(string line, out int inputTokens)
+    {
+        inputTokens = 0;
+        if (!line.StartsWith("data: ")) return false;
+        var payload = line[6..].Trim();
+        if (payload == "[DONE]") return false;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(payload);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("type", out var t) && t.GetString() == "message_start" &&
+                root.TryGetProperty("message", out var msg) &&
+                msg.TryGetProperty("usage", out var usage) &&
+                usage.TryGetProperty("input_tokens", out var it) && it.ValueKind == JsonValueKind.Number)
+            {
+                inputTokens = it.GetInt32();
+                return inputTokens > 0;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    /// <summary>
+    /// 从 Anthropic 流式 SSE 的 content_block_delta 事件中提取增量文本（delta.text）
+    /// 返回 null 表示该行不是 Anthropic 增量事件。
+    /// </summary>
+    public static string? TryExtractAnthropicDeltaText(string line)
+    {
+        if (!line.StartsWith("data: ")) return null;
+        var payload = line[6..].Trim();
+        if (payload == "[DONE]") return null;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(payload);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("type", out var t) && t.GetString() == "content_block_delta" &&
+                root.TryGetProperty("delta", out var delta) &&
+                delta.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String)
+            {
+                return text.GetString();
+            }
+        }
+        catch { }
+        return null;
     }
 
     private static bool HasFinishReason(JsonElement choices)
