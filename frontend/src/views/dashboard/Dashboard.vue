@@ -36,13 +36,13 @@
     </a-row>
 
     <!-- API Key 用量（按渠道+密钥） -->
-    <a-card title="API Key 调用量（按渠道)" class="chart-row" :loading="keyLoading">
+    <a-card title="API Key 调用量（按渠道）" class="chart-row" :loading="keyLoading">
       <a-collapse :default-active-key="upstreamStats.map(c => c.channelId)" accordion>
-        <a-collapse-item v-for="ch in upstreamStats" :key="ch.channelId" :header="`${ch.channelName} (${ch.supplierType}) · 共 ${ch.totalKeys} 个密钥 · ${ch.totalCalls} 次调用`">
-          <a-table :columns="keyColumns" :data="ch.keys" row-key="Id" size="small" :pagination="false">
+        <a-collapse-item v-for="ch in upstreamStats" :key="ch.channelId" :header="`${ch.channelName} (${ch.supplierType}) · 共 ${ch.totalKeys} 个密钥 · 调用 ${ch.totalCalls} 次 · 成功 ${ch.successCalls} 次`">
+          <a-table :columns="keyColumns" :data="ch.keys" row-key="id" size="small" :pagination="false">
             <template #status="{ record }">
-              <a-tag :color="record.Status === 1 ? 'green' : record.Status === 2 ? 'red' : 'gray'" size="small">
-                {{ record.Status === 1 ? '正常' : record.Status === 2 ? '失效' : '禁用' }}
+              <a-tag :color="record.status === 1 ? 'green' : record.status === 2 ? 'red' : 'gray'" size="small">
+                {{ record.status === 1 ? '正常' : record.status === 2 ? '失效' : '禁用' }}
               </a-tag>
             </template>
           </a-table>
@@ -101,33 +101,34 @@ const modelColumns = [
 const tokenColumns = [
   { title: '#', slotName: 'rank', width: 50 },
   { title: '令牌', dataIndex: 'token' },
-  { title: '调用次数', dataIndex: 'count', width: 100 }
+  { title: '调用次数', dataIndex: 'count', width: 100 },
+  { title: 'Token用量', dataIndex: 'tokens', width: 100 }
 ]
 const keyColumns = [
   { title: '密钥', dataIndex: 'keyValue', ellipsis: true, width: 220 },
-  { title: '调用次数', dataIndex: 'TotalCalls', width: 90 },
-  { title: '成功次数', dataIndex: 'SuccessCalls', width: 90 },
-  { title: 'Token用量', dataIndex: 'UsedTokens', width: 100 },
-  { title: '权重', dataIndex: 'Weight', width: 60 },
+  { title: '调用次数', dataIndex: 'totalCalls', width: 90 },
+  { title: '成功次数', dataIndex: 'successCalls', width: 90 },
+  { title: 'Token用量', dataIndex: 'usedTokens', width: 100 },
+  { title: '权重', dataIndex: 'weight', width: 60 },
   { title: '状态', slotName: 'status', width: 80 }
 ]
 const modelByCustomColumns = [
-  { title: '对外模型ID', dataIndex: 'model' },
-  { title: '调用', dataIndex: 'calls', width: 70 },
-  { title: '成功', dataIndex: 'success', width: 60 },
-  { title: '失败', dataIndex: 'failed', width: 60 },
-  { title: '输入Token', dataIndex: 'inputTokens', width: 100 },
-  { title: '输出Token', dataIndex: 'outputTokens', width: 100 },
-  { title: '总Token', dataIndex: 'totalTokens', width: 100 }
+  { title: '对外模型ID', dataIndex: 'model', ellipsis: true },
+  { title: '调用', dataIndex: 'calls', width: 65 },
+  { title: '成功', dataIndex: 'success', width: 55 },
+  { title: '失败', dataIndex: 'failed', width: 55 },
+  { title: '输入Token', dataIndex: 'inputTokens', width: 100, cellClass: 'cell-nowrap' },
+  { title: '输出Token', dataIndex: 'outputTokens', width: 100, cellClass: 'cell-nowrap' },
+  { title: '总Token', dataIndex: 'totalTokens', width: 100, cellClass: 'cell-nowrap' }
 ]
 const modelByOriginalColumns = [
-  { title: '对外模型', dataIndex: 'customModel' },
-  { title: '上游模型', dataIndex: 'originalModel' },
-  { title: '渠道', dataIndex: 'channel' },
-  { title: '调用', dataIndex: 'calls', width: 70 },
-  { title: '成功', dataIndex: 'success', width: 60 },
-  { title: '失败', dataIndex: 'failed', width: 60 },
-  { title: '总Token', dataIndex: 'totalTokens', width: 100 }
+  { title: '对外模型', dataIndex: 'customModel', ellipsis: true },
+  { title: '上游模型', dataIndex: 'originalModel', ellipsis: true },
+  { title: '渠道', dataIndex: 'channel', ellipsis: true },
+  { title: '调用', dataIndex: 'calls', width: 65 },
+  { title: '成功', dataIndex: 'success', width: 55 },
+  { title: '失败', dataIndex: 'failed', width: 55 },
+  { title: '总Token', dataIndex: 'totalTokens', width: 100, cellClass: 'cell-nowrap' }
 ]
 
 async function loadMain() {
@@ -182,4 +183,5 @@ onMounted(() => {
 .dashboard h2 { margin-bottom: 24px; }
 .stats-row { margin-bottom: 24px; }
 .chart-row { margin-bottom: 24px; }
+:deep(.cell-nowrap) { white-space: nowrap; }
 </style>

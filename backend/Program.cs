@@ -15,6 +15,13 @@ AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Kestrel：取消请求体大小限制（AI 转发场景：长 prompt / 图片附件 / 批量请求）
+// 与 appsettings.json 的 Kestrel:Limits 配置互为保险，避免 nginx 413 之后又触发后端 413
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.Limits.MaxRequestBodySize = null; // 取消请求体大小上限（默认 30MB）
+});
+
 // Serilog 配置 - 从 appsettings.json 读取（Console + File）
 Log.Logger = new LoggerConfiguration()
     .ReadFrom.Configuration(builder.Configuration)
@@ -68,10 +75,13 @@ static string? ExtractRedisPassword(string config)
 builder.Services.AddHostedService<LogCleanupService>();
 
 // HttpClient 工厂
+// AIClient: 转发到上游 AI 服务。超时在每次调用时按节点 TimeoutSeconds 动态设置，
+// 这里仅给一个较宽松的兜底默认值（5 分钟），避免 SSE 长连接被全局超时中断。
 builder.Services.AddHttpClient("AIClient", client =>
 {
     client.DefaultRequestHeaders.Accept.Add(
         new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
+    client.Timeout = TimeSpan.FromMinutes(5);
 });
 builder.Services.AddHttpClient();
 

@@ -21,9 +21,9 @@ public class LogController : ControllerBase
         _db = db;
     }
 
-    /// <summary>查询调用日志(分页+筛选)</summary>
+    /// <summary>查询调用日志(分页+筛选)，含令牌备注</summary>
     [HttpGet("calls")]
-    public async Task<ApiResult<PageResult<CallLog>>> GetCallLogs(
+    public async Task<ApiResult<PageResult<object>>> GetCallLogs(
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 20,
         [FromQuery] string? token = null,
@@ -47,9 +47,39 @@ public class LogController : ControllerBase
             .Take(pageSize)
             .ToListAsync();
 
-        return ApiResult<PageResult<CallLog>>.Success(new PageResult<CallLog>
+        // 查找令牌备注
+        var tokenValues = list.Where(l => !string.IsNullOrEmpty(l.TokenValue)).Select(l => l.TokenValue!).Distinct().ToList();
+        var remarkMap = new Dictionary<string, string?>();
+        if (tokenValues.Count > 0)
         {
-            Total = total, Page = page, PageSize = pageSize, List = list
+            var tokenRemarks = await _db.Select<Token>().Where(t => tokenValues.Contains(t.TokenValue)).ToListAsync(t => new { t.TokenValue, t.Remark });
+            foreach (var tr in tokenRemarks)
+                remarkMap[tr.TokenValue] = tr.Remark;
+        }
+
+        var resultList = list.Select(l => (object)new
+        {
+            l.Id,
+            l.TokenValue,
+            TokenRemark = remarkMap.TryGetValue(l.TokenValue ?? "", out var r) ? r : null,
+            l.ClientIp,
+            l.CustomModelId,
+            l.OriginalModelId,
+            l.ChannelName,
+            l.Status,
+            l.IsStream,
+            l.InputTokens,
+            l.OutputTokens,
+            l.DurationMs,
+            l.ErrorMessage,
+            l.RequestBody,
+            l.ResponseBody,
+            l.CreatedAt
+        }).ToList();
+
+        return ApiResult<PageResult<object>>.Success(new PageResult<object>
+        {
+            Total = total, Page = page, PageSize = pageSize, List = resultList
         });
     }
 
