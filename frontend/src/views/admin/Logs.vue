@@ -36,7 +36,11 @@
 
         <a-table :columns="callColumns" :data="callLogs" row-key="id" :loading="loading" :pagination="false">
           <template #status="{ record }">
-            <a-tag :color="record.status === 'Success' ? 'green' : 'red'">
+            <a-tag
+              :color="record.status === 'Success' ? 'green' : 'red'"
+              :class="record.status !== 'Success' ? 'status-failed' : ''"
+              @click="record.status !== 'Success' && showError(record)"
+            >
               {{ record.status === 'Success' ? '成功' : '失败' }}
             </a-tag>
           </template>
@@ -108,6 +112,17 @@ const opTotal = ref(0)
 
 const callFilter = ref({ token: '', model: '', status: '', startTime: '', endTime: '' })
 const opFilter = ref({ action: '', startTime: '', endTime: '' })
+
+// 点击"失败"状态标签时，弹出详细错误原因
+function showError(record) {
+  const msg = record.errorMessage || '无详细错误信息'
+  Message.error({
+    content: msg,
+    duration: 0,          // 不自动关闭，方便复制/阅读
+    closable: true,
+    showIcon: true
+  })
+}
 
 const callColumns = [
   { title: 'ID', dataIndex: 'id', width: 60 },
@@ -214,4 +229,5 @@ onMounted(() => {
 .page-header { margin-bottom: 16px; }
 .page-header h2 { margin: 0; }
 .filter-row { margin-bottom: 16px; }
+.status-failed { cursor: pointer; }
 </style>

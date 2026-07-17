@@ -243,12 +243,13 @@ public class ForwardEngine
                         node.ChannelName, node.OriginalModelId, attempt + 1);
                     await SetCooldownAsync(node, node.CooldownSeconds);
                     lastEx = ex;
-                    lastErrorMsg = ex.Message;
+                    var detail = ClassifyException(ex, node, "非流式转发");
+                    lastErrorMsg = detail;
                     lastStatusCode = 503;
 
                     await LogCall(tokenValue, customModelId, node.ChannelName, node.OriginalModelId, "Failed",
                         isStream, 0, 0, (long)(DateTime.UtcNow - startTime).TotalMilliseconds,
-                        requestBody, null, ex.Message + " (等待5秒后重试)", clientIp);
+                        requestBody, null, detail + " (等待5秒后重试)", clientIp);
 
                     await Task.Delay(retryDelayMs);
                     continue; // 继续尝试 candidates 中的下一个节点
@@ -445,10 +446,11 @@ public class ForwardEngine
                         _logger.LogError(ex, "SSE降级连接异常，节点: {Channel}/{Model}，第 {Attempt} 次尝试",
                             node.ChannelName, node.OriginalModelId, attempt + 1);
                         await SetCooldownAsync(node, node.CooldownSeconds);
-                        lastError = ex.Message;
+                        var detail = ClassifyException(ex, node, "SSE降级");
+                        lastError = detail;
                         await LogCall(tokenValue, customModelId, node.ChannelName, node.OriginalModelId, "Failed",
                             true, 0, 0, (long)(DateTime.UtcNow - startTime).TotalMilliseconds,
-                            requestBody, null, ex.Message + " (SSE降级等待5秒后重试)", clientIp);
+                            requestBody, null, detail + " (SSE降级等待5秒后重试)", clientIp);
                         await Task.Delay(retryDelayMs);
                         continue;
                     }
@@ -458,7 +460,8 @@ public class ForwardEngine
                 try
                 {
                     var client = _httpClientFactory.CreateClient("AIClient");
-                    client.Timeout = TimeSpan.FromSeconds(node.TimeoutSeconds);
+                    // SSE 长连接：禁用 HttpClient 整体超时，避免流式读取中途被取消
+                    client.Timeout = Timeout.InfiniteTimeSpan;
 
                     var httpRequest = new HttpRequestMessage(HttpMethod.Post, fullUrl)
                     {
@@ -467,7 +470,9 @@ public class ForwardEngine
                     SetAuthHeaders(httpRequest, node.SupplierType, node.ApiKey);
                     httpRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
 
-                    var response = await client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead);
+                    // 仅对"建立连接 + 读取响应头"阶段设置超时（节点 TimeoutSeconds）
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(node.TimeoutSeconds));
+                    var response = await client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cts.Token);
 
                     // 如果上游返回非成功状态码，冷却并重试下一个节点
                     if (!response.IsSuccessStatusCode)
@@ -511,10 +516,11 @@ public class ForwardEngine
                     _logger.LogError(ex, "SSE连接异常，节点: {Channel}/{Model}，第 {Attempt} 次尝试",
                         node.ChannelName, node.OriginalModelId, attempt + 1);
                     await SetCooldownAsync(node, node.CooldownSeconds);
-                    lastError = ex.Message;
+                    var detail = ClassifyException(ex, node, "SSE流式");
+                    lastError = detail;
                     await LogCall(tokenValue, customModelId, node.ChannelName, node.OriginalModelId, "Failed",
                         true, 0, 0, (long)(DateTime.UtcNow - startTime).TotalMilliseconds,
-                        requestBody, null, ex.Message + " (SSE等待5秒后重试)", clientIp);
+                        requestBody, null, detail + " (SSE等待5秒后重试)", clientIp);
 
                     await Task.Delay(retryDelayMs);
                     continue; // 继续尝试 candidates 中的下一个节点
@@ -896,6 +902,62 @@ public class ForwardEngine
 
             return responseBody[..Math.Min(responseBody.Length, 200)];
         }
+    }
+
+    /// <summary>
+    /// 对异常进行分类，生成带上下文的详细错误描述，供调用日志 ErrorMessage 字段使用。
+    /// 区分：超时 / 连接拒绝 / DNS 解析失败 / TLS 握手失败 / HTTP 状态码错误 / 主动取消 / 其他。
+    /// </summary>
+    private static string ClassifyException(Exception ex, LoadBalanceNode node, string phase)
+    {
+        var channel = $"{node.ChannelName}/{node.OriginalModelId}";
+        var timeout = node.TimeoutSeconds;
+
+        // 解包外层包装异常（HttpClient 会把 OperationCanceledException 包成 TaskCanceledException）
+        var root = ex;
+        while (root.InnerException != null) root = root.InnerException;
+
+        // 超时：HttpClient.Timeout 触发，或 CancellationTokenSource 超时
+        if (ex is System.Threading.Tasks.TaskCanceledException tce)
+        {
+            if (tce.Message.Contains("HttpClient.Timeout", StringComparison.OrdinalIgnoreCase))
+                return $"[{phase}] 上游连接超时，渠道={channel}，超时阈值={timeout}s（HttpClient.Timeout 触发）";
+            if (tce.Message.Contains("A task was canceled", StringComparison.OrdinalIgnoreCase) ||
+                tce.CancellationToken.IsCancellationRequested)
+                return $"[{phase}] 上游连接超时，渠道={channel}，超时阈值={timeout}s（CancellationToken 取消）";
+            return $"[{phase}] 任务被取消，渠道={channel}，原因={tce.Message}";
+        }
+        if (ex is TimeoutException)
+            return $"[{phase}] 上游连接超时，渠道={channel}，超时阈值={timeout}s";
+
+        // 网络层错误分类
+        if (root is System.Net.Sockets.SocketException se)
+        {
+            var desc = se.SocketErrorCode switch
+            {
+                System.Net.Sockets.SocketError.TimedOut => $"连接超时（{timeout}s）",
+                System.Net.Sockets.SocketError.ConnectionRefused => "连接被拒绝（上游端口未开放或服务未启动）",
+                System.Net.Sockets.SocketError.HostNotFound => "DNS 解析失败（上游域名无法解析）",
+                System.Net.Sockets.SocketError.HostUnreachable => "主机不可达（网络不通）",
+                System.Net.Sockets.SocketError.NetworkUnreachable => "网络不可达（本地路由问题）",
+                System.Net.Sockets.SocketError.ConnectionReset => "连接被重置（上游主动断开或负载均衡踢出）",
+                System.Net.Sockets.SocketError.Shutdown => "连接已关闭（上游在响应前断开）",
+                System.Net.Sockets.SocketError.OperationAborted => "操作被中止（请求被取消）",
+                _ => $"SocketError={se.SocketErrorCode}"
+            };
+            return $"[{phase}] 网络错误，渠道={channel}，{desc}";
+        }
+
+        // TLS / SSL 握手失败
+        if (root is System.Security.Authentication.AuthenticationException)
+            return $"[{phase}] TLS 握手失败，渠道={channel}，原因={root.Message}";
+        if (root is System.IO.IOException)
+            return $"[{phase}] IO 读取失败，渠道={channel}，原因={root.Message}";
+
+        // 通用兜底：记录异常类型 + 消息 + 内层消息
+        var inner = ex.InnerException?.Message;
+        return $"[{phase}] {ex.GetType().Name}，渠道={channel}，原因={ex.Message}" +
+               (string.IsNullOrEmpty(inner) ? "" : $" | 内层: {inner}");
     }
 
     /// <summary>
